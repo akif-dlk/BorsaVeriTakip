@@ -1,5 +1,6 @@
 psycopg[binary]==3.2.3
 python-dotenv==1.0.1
 pandas==2.2.3
-yfinance==0.2.50
+numpy==1.26.4
+yfinance==1.8.0
 requests==2.32.3

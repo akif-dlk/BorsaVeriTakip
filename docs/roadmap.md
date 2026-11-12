@@ -2,7 +2,7 @@
 
 ## Hafta 1: Temel ve veri çekimi
 - [x] Gün 1: Repo yapısı, mimari taslağı, docker-compose ile PostgreSQL, kaynak seçimi
-- [ ] Gün 2: Döviz çekici (USD/TRY, EUR/TRY), hata yönetimi → `fetch_fx.py`
+- [x] Gün 2: Döviz çekici (USD/TRY, EUR/TRY), hata yönetimi → `fetch_fx.py`
 - [ ] Gün 3: BIST hisse çekici (8 hisse + BIST100), geçmiş veri → `fetch_stocks.py`
 - [ ] Gün 4: Altın çekici, gram altın hesabı → `fetch_gold.py`
 - [ ] Gün 5: Raw şema, idempotent upsert

@@ -11,8 +11,20 @@ Python + PostgreSQL + Airflow + dbt + Kafka + FastAPI + Streamlit, hepsi Docker 
 cp .env.example .env
 docker compose up -d postgres
 pip install -r requirements.txt
-PYTHONPATH=src python -m bvt.db   # PostgreSQL sürümünü yazdırırsa bağlantı tamam
+PYTHONPATH=src python -m bvt.db --init   # bağlantıyı test eder, sql/init şemalarını uygular
 ```
+
+## Veri çekiciler
+
+```bash
+# Döviz (USD/TRY, EUR/TRY) → raw.fx_rates
+PYTHONPATH=src python -m bvt.fetch_fx                      # son 30 gün
+PYTHONPATH=src python -m bvt.fetch_fx --start 2020-01-01   # geçmiş yükleme
+PYTHONPATH=src python -m bvt.fetch_fx --days 7 --dry-run   # DB'ye yazmadan önizleme
+```
+
+Çekiciler tek istekte toplu indirme yapar, hata/boş yanıtta üstel bekleme ile yeniden dener ve her çalışmayı
+`ops.pipeline_runs` tablosuna kaydeder. `EVDS_API_KEY` doluysa TCMB gösterge kuru ikinci kaynak olarak eklenir.
 
 ## Belgeler
 

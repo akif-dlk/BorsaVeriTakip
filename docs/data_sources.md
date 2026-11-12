@@ -19,6 +19,14 @@
 - **TCMB EVDS** ücretsizdir, kayıt ve API anahtarı gerektirir. Anahtar `.env` içinde tutulur, repoya girmez.
 - Veriler yatırım tavsiyesi değildir.
 
+## Ham tablolar
+
+| Tablo | Anahtar | Doldurulan |
+|---|---|---|
+| `raw.fx_rates` | `(pair, rate_date, source)` | `bvt.fetch_fx` (yfinance OHLC; EVDS yalnızca `close`) |
+
+Hafta sonu ve resmî tatillerde satır oluşmaz; boşluklar staging katmanında ele alınır.
+
 ## Neden bu seçim?
 
 Anahtar gerektirmeyen tek bir kaynakla (yfinance) proje herkes tarafından `git clone` + `docker compose up`
