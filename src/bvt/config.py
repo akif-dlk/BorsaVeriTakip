@@ -14,7 +14,7 @@ def pg_dsn() -> str:
     )
 
 
-# İzlenecek enstrümanlar (Gün 3'te genişletilecek)
+# İzlenecek enstrümanlar: 8 BIST hissesi + BIST 100 endeksi, döviz pariteleri, ons altın
 FX_PAIRS = {"USDTRY": "USDTRY=X", "EURTRY": "EURTRY=X"}
 BIST_TICKERS = ["THYAO.IS", "GARAN.IS", "ASELS.IS", "BIMAS.IS", "KCHOL.IS", "SISE.IS", "TUPRS.IS", "AKBNK.IS"]
 BIST_INDEX = "XU100.IS"

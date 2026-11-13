@@ -24,8 +24,16 @@
 | Tablo | Anahtar | Doldurulan |
 |---|---|---|
 | `raw.fx_rates` | `(pair, rate_date, source)` | `bvt.fetch_fx` (yfinance OHLC; EVDS yalnızca `close`) |
+| `raw.stock_prices` | `(symbol, price_date, source)` | `bvt.fetch_stocks` (yfinance OHLC + `adj_close` + `volume`; sembol `.IS` soneksiz) |
 
 Hafta sonu ve resmî tatillerde satır oluşmaz; boşluklar staging katmanında ele alınır.
+
+Notlar (BIST):
+- `close` ham kapanış, `adj_close` temettü/bedelsiz sermaye artırımı düzeltmeli kapanıştır; getiri ve
+  göstergeler `adj_close` üzerinden hesaplanır. Yahoo geçmiş `adj_close` değerlerini sonradan güncelleyebilir;
+  upsert bu düzeltmeleri tekrar çekimde üzerine yazar.
+- Seans kapanmadan yapılan çekimde günün satırı ara değerdir (XU100 hacmi 0 görünebilir). Günlük DAG seans
+  sonrasına zamanlanır; aynı gün tekrar çalışırsa upsert satırı kesin değerle günceller.
 
 ## Neden bu seçim?
 

@@ -21,10 +21,19 @@ PYTHONPATH=src python -m bvt.db --init   # bağlantıyı test eder, sql/init şe
 PYTHONPATH=src python -m bvt.fetch_fx                      # son 30 gün
 PYTHONPATH=src python -m bvt.fetch_fx --start 2020-01-01   # geçmiş yükleme
 PYTHONPATH=src python -m bvt.fetch_fx --days 7 --dry-run   # DB'ye yazmadan önizleme
+
+# BIST (8 hisse + XU100) → raw.stock_prices
+PYTHONPATH=src python -m bvt.fetch_stocks                          # son 30 gün
+PYTHONPATH=src python -m bvt.fetch_stocks --start 2018-01-01       # geçmiş yükleme (yıllık parçalar halinde)
+PYTHONPATH=src python -m bvt.fetch_stocks --symbols THYAO XU100 --days 7 --dry-run
 ```
 
+> Mevcut bir veritabanına yeni ham tablolar eklendiğinde `python -m bvt.db --init` tekrar çalıştırılır
+> (betikler `IF NOT EXISTS` ile yazıldı, güvenlidir).
+
 Çekiciler tek istekte toplu indirme yapar, hata/boş yanıtta üstel bekleme ile yeniden dener ve her çalışmayı
-`ops.pipeline_runs` tablosuna kaydeder. `EVDS_API_KEY` doluysa TCMB gösterge kuru ikinci kaynak olarak eklenir.
+`ops.pipeline_runs` tablosuna kaydeder. Uzun geçmiş yüklemeleri parçalara bölünür; her parça
+ayrı istekle çekilip hemen yüklenir ve parçalar arasında kısa bekleme yapılır. `EVDS_API_KEY` doluysa TCMB gösterge kuru ikinci kaynak olarak eklenir.
 
 ## Belgeler
 
