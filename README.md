@@ -26,6 +26,11 @@ PYTHONPATH=src python -m bvt.fetch_fx --days 7 --dry-run   # DB'ye yazmadan öni
 PYTHONPATH=src python -m bvt.fetch_stocks                          # son 30 gün
 PYTHONPATH=src python -m bvt.fetch_stocks --start 2018-01-01       # geçmiş yükleme (yıllık parçalar halinde)
 PYTHONPATH=src python -m bvt.fetch_stocks --symbols THYAO XU100 --days 7 --dry-run
+
+# Altın: ons (GC=F, USD) + gram altın (TRY = ons × USDTRY / 31.1034768) → raw.gold_prices
+PYTHONPATH=src python -m bvt.fetch_gold                       # son 30 gün
+PYTHONPATH=src python -m bvt.fetch_gold --start 2015-01-01    # geçmiş yükleme (yıllık parçalar halinde)
+PYTHONPATH=src python -m bvt.fetch_gold --days 7 --dry-run
 ```
 
 > Mevcut bir veritabanına yeni ham tablolar eklendiğinde `python -m bvt.db --init` tekrar çalıştırılır
