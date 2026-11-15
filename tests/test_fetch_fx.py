@@ -112,45 +112,19 @@ def test_fetch_all_rejects_reversed_range():
         fetch_fx.fetch_all(date(2024, 2, 1), date(2024, 1, 1))
 
 
-class _FakeCursor:
-    def __init__(self, sink):
-        self.sink = sink
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def executemany(self, sql, rows):
-        self.sink.append((sql, list(rows)))
-
-
-class _FakeConn:
-    def __init__(self):
-        self.executed, self.commits = [], 0
-
-    def cursor(self):
-        return _FakeCursor(self.executed)
-
-    def commit(self):
-        self.commits += 1
-
-
-def test_load_upserts_rows():
+def test_load_upserts_rows(fake_conn):
     df = fetch_fx.clean(fetch_fx.parse_yf_frame(_yf_frame(["USDTRY=X", "EURTRY=X"]), fetch_fx.config.FX_PAIRS))
-    conn = _FakeConn()
-    assert fetch_fx.load(conn, df) == 6
-    sql, rows = conn.executed[0]
-    assert "ON CONFLICT (pair, rate_date, source) DO UPDATE" in sql
-    assert len(rows) == 6 and len(rows[0]) == 7
-    assert conn.commits == 1
+    result = fetch_fx.load(fake_conn, df)
+    assert result.inserted == 6 and result.total == 6
+    assert any("INSERT INTO raw.fx_rates" in sql and "ON CONFLICT (pair, rate_date, source) DO UPDATE" in sql
+               for sql in fake_conn.executed)
+    assert len(fake_conn.copied) == 6 and len(fake_conn.copied[0]) == 7
+    assert fake_conn.commits == 1
 
 
-def test_load_empty_is_noop():
-    conn = _FakeConn()
-    assert fetch_fx.load(conn, pd.DataFrame(columns=fetch_fx.COLUMNS)) == 0
-    assert conn.executed == []
+def test_load_empty_is_noop(fake_conn):
+    assert fetch_fx.load(fake_conn, pd.DataFrame(columns=fetch_fx.COLUMNS)).total == 0
+    assert fake_conn.executed == []
 
 
 def test_parse_args_default_window():

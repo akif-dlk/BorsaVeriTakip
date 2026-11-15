@@ -39,7 +39,7 @@ flowchart LR
 
 | Şema | İçerik | Sahibi |
 |---|---|---|
-| `raw` | Kaynaktan geldiği gibi, `(sembol, tarih)` üzerinde upsert | Python çekiciler |
+| `raw` | Kaynaktan geldiği gibi; doğal anahtar `(enstrüman, tarih, kaynak)` üzerinde idempotent upsert (`bvt.raw_loader`) | Python çekiciler |
 | `staging` | Temizlenmiş, tipleri düzeltilmiş `stg_*` görünümleri | dbt |
 | `marts` | Star schema + göstergeler, korelasyonlar | dbt |
 | `streaming` | Dakikalık fiyatlar ve pencere ortalamaları | Kafka consumer |

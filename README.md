@@ -36,6 +36,19 @@ PYTHONPATH=src python -m bvt.fetch_gold --days 7 --dry-run
 > Mevcut bir veritabanına yeni ham tablolar eklendiğinde `python -m bvt.db --init` tekrar çalıştırılır
 > (betikler `IF NOT EXISTS` ile yazıldı, güvenlidir).
 
+## Raw katman ve idempotent yükleme
+
+Üç çekici de ortak `bvt.raw_loader` sözleşmesiyle yükler: satırlar `COPY` ile geçici tabloya yazılır, tek bir
+`INSERT ... ON CONFLICT DO UPDATE` ile doğal anahtar `(enstrüman, tarih, kaynak)` üzerinden aktarılır.
+Aynı veri ikinci kez gelirse kopya oluşmaz ve satır yeniden yazılmaz; yalnızca değeri değişen (ör. Yahoo
+`adj_close` revizyonu) satırlar güncellenir. Her çalışma `ops.pipeline_runs`'a yeni/güncellenen/değişmeyen
+satır sayılarıyla kaydedilir.
+
+```bash
+PYTHONPATH=src python -m bvt.db --summary   # raw tablolarda enstrüman başına satır sayısı ve tarih aralığı
+BVT_TEST_PG=1 python -m pytest -q tests/test_raw_loader_pg.py   # gerçek PostgreSQL'e karşı idempotentlik testi
+```
+
 Çekiciler tek istekte toplu indirme yapar, hata/boş yanıtta üstel bekleme ile yeniden dener ve her çalışmayı
 `ops.pipeline_runs` tablosuna kaydeder. Uzun geçmiş yüklemeleri parçalara bölünür; her parça
 ayrı istekle çekilip hemen yüklenir ve parçalar arasında kısa bekleme yapılır. `EVDS_API_KEY` doluysa TCMB gösterge kuru ikinci kaynak olarak eklenir.
@@ -51,7 +64,7 @@ ayrı istekle çekilip hemen yüklenir ve parçalar arasında kısa bekleme yap�
 ```
 ├── docker-compose.yml   # servisler (şimdilik PostgreSQL)
 ├── sql/init/            # ilk açılışta çalışan şema betikleri
-├── src/bvt/             # Python paketi: config, db, çekiciler
+├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler
 ├── docs/                # mimari, kaynaklar, yol haritası
 └── tests/
 ```

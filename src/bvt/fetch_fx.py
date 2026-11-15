@@ -22,11 +22,12 @@ import requests
 import yfinance as yf
 
 from bvt import config
+from bvt.raw_loader import FX_RATES, LoadResult, load_frame
 from bvt.retry import retry
 
 log = logging.getLogger("bvt.fetch_fx")
 
-COLUMNS = ["pair", "rate_date", "source", "open", "high", "low", "close"]
+COLUMNS = list(FX_RATES.columns)  # pair, rate_date, source, open, high, low, close
 
 # EVDS seri kodları: gösterge döviz alış kuru
 EVDS_SERIES = {"USDTRY": "TP.DK.USD.A", "EURTRY": "TP.DK.EUR.A"}
@@ -153,24 +154,9 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- yükleme
-UPSERT_SQL = """
-INSERT INTO raw.fx_rates (pair, rate_date, source, open, high, low, close)
-VALUES (%s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (pair, rate_date, source) DO UPDATE
-SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-    close = EXCLUDED.close, fetched_at = now()
-"""
-
-
-def load(conn, df: pd.DataFrame) -> int:
-    """Satırları raw.fx_rates'e upsert eder; aynı gün tekrar çalışırsa kopya oluşmaz."""
-    if df.empty:
-        return 0
-    rows = [tuple(r) for r in df[COLUMNS].itertuples(index=False, name=None)]
-    with conn.cursor() as cur:
-        cur.executemany(UPSERT_SQL, rows)
-    conn.commit()
-    return len(rows)
+def load(conn, df: pd.DataFrame) -> LoadResult:
+    """Satırları raw.fx_rates'e idempotent upsert eder (bkz. bvt.raw_loader); tekrar çalışmada kopya oluşmaz."""
+    return load_frame(conn, FX_RATES, df)
 
 
 # --------------------------------------------------------------------------- orkestrasyon
@@ -199,16 +185,16 @@ def run(start: date, end: date, dry_run: bool = False) -> int:
     from bvt.db import connect, finish_run, start_run
 
     with connect() as conn:
-        run_id = start_run(conn, "fx")
+        run_id = start_run(conn, "fx", start, end)
         try:
-            n = load(conn, df)
+            result = load(conn, df)
         except Exception as exc:
             conn.rollback()
             finish_run(conn, run_id, "failed", error=str(exc)[:1000])
             raise
-        finish_run(conn, run_id, "success", rows_loaded=n)
-    log.info("raw.fx_rates: %d satır upsert edildi", n)
-    return n
+        finish_run(conn, run_id, "success", result)
+    log.info("raw.fx_rates: %s", result)
+    return result.total
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

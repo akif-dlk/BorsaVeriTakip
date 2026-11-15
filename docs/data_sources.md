@@ -27,6 +27,14 @@
 | `raw.stock_prices` | `(symbol, price_date, source)` | `bvt.fetch_stocks` (yfinance OHLC + `adj_close` + `volume`; sembol `.IS` soneksiz) |
 | `raw.gold_prices` | `(instrument, price_date, source)` | `bvt.fetch_gold` (`XAUUSD_OZ`/yfinance/USD ve `XAUTRY_GRAM`/derived/TRY; gram satırında kullanılan kur `usdtry`) |
 
+Yükleme sözleşmesi (`bvt.raw_loader`, `sql/init/005_raw_idempotency.sql`):
+- Doğal anahtar PRIMARY KEY'dir; parti içindeki tekrarlar (son satır kalır) ve tekrar çalışmalar kopya üretmez.
+- Değer değişmediyse satır yeniden yazılmaz (`IS DISTINCT FROM`); değiştiyse üzerine yazılır.
+- `inserted_at` satırın ilk yüklendiği, `fetched_at` değerlerin son yazıldığı andır; ikisi farklıysa satır
+  kaynakta revize edilmiştir.
+- `ops.pipeline_runs`: `rows_loaded` = `rows_inserted` + `rows_updated` + `rows_unchanged`; istenen tarih
+  aralığı `window_start`/`window_end` sütunlarında tutulur.
+
 Hafta sonu ve resmî tatillerde satır oluşmaz; boşluklar staging katmanında ele alınır.
 
 Notlar (BIST):

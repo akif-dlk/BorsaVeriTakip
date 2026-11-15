@@ -131,46 +131,19 @@ def test_iter_chunks_skips_empty_short_chunk_but_raises_on_long(monkeypatch):
         list(fetch_stocks.iter_chunks(date(2024, 1, 1), date(2024, 1, 31), tickers, pause=0))
 
 
-class _FakeCursor:
-    def __init__(self, sink):
-        self.sink = sink
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def executemany(self, sql, rows):
-        self.sink.append((sql, list(rows)))
-
-
-class _FakeConn:
-    def __init__(self):
-        self.executed, self.commits = [], 0
-
-    def cursor(self):
-        return _FakeCursor(self.executed)
-
-    def commit(self):
-        self.commits += 1
-
-
-def test_load_upserts_rows():
+def test_load_upserts_rows(fake_conn):
     tickers = {"THYAO": "THYAO.IS", "XU100": "XU100.IS"}
     df = fetch_stocks.clean(fetch_stocks.parse_yf_frame(_yf_frame(list(tickers.values())), tickers))
-    conn = _FakeConn()
-    assert fetch_stocks.load(conn, df) == 6
-    sql, rows = conn.executed[0]
-    assert "raw.stock_prices" in sql and "ON CONFLICT (symbol, price_date, source) DO UPDATE" in sql
-    assert len(rows[0]) == 9
-    assert conn.commits == 1
+    assert fetch_stocks.load(fake_conn, df).inserted == 6
+    assert any("INSERT INTO raw.stock_prices" in sql and "ON CONFLICT (symbol, price_date, source) DO UPDATE" in sql
+               for sql in fake_conn.executed)
+    assert len(fake_conn.copied[0]) == 9
+    assert fake_conn.commits == 1
 
 
-def test_load_empty_is_noop():
-    conn = _FakeConn()
-    assert fetch_stocks.load(conn, pd.DataFrame(columns=fetch_stocks.COLUMNS)) == 0
-    assert conn.executed == []
+def test_load_empty_is_noop(fake_conn):
+    assert fetch_stocks.load(fake_conn, pd.DataFrame(columns=fetch_stocks.COLUMNS)).total == 0
+    assert fake_conn.executed == []
 
 
 def test_parse_args():

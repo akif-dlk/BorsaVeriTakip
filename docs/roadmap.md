@@ -5,7 +5,7 @@
 - [x] Gün 2: Döviz çekici (USD/TRY, EUR/TRY), hata yönetimi → `fetch_fx.py`
 - [x] Gün 3: BIST hisse çekici (8 hisse + BIST100), geçmiş veri → `fetch_stocks.py`
 - [x] Gün 4: Altın çekici, gram altın hesabı → `fetch_gold.py`
-- [ ] Gün 5: Raw şema, idempotent upsert
+- [x] Gün 5: Raw şema, idempotent upsert → `raw_loader.py`
 - [ ] Gün 6: Airflow kurulumu, günlük DAG
 - [ ] Gün 7: Retry, loglama, backfill, tatil boşlukları
 

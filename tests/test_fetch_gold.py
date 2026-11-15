@@ -135,46 +135,21 @@ def test_iter_chunks_skips_short_empty_chunk(monkeypatch):
         list(fetch_gold.iter_chunks(date(2024, 1, 1), date(2024, 1, 31), pause=0))
 
 
-class _FakeCursor:
-    def __init__(self, sink):
-        self.sink = sink
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def executemany(self, sql, rows):
-        self.sink.append((sql, list(rows)))
-
-
-class _FakeConn:
-    def __init__(self):
-        self.executed, self.commits = [], 0
-
-    def cursor(self):
-        return _FakeCursor(self.executed)
-
-    def commit(self):
-        self.commits += 1
-
-
-def test_load_upserts_rows():
+def test_load_upserts_rows(fake_conn):
     df = fetch_gold.clean(pd.DataFrame([_row(fetch_gold.OUNCE, date(2024, 1, 2), 2000.0),
                                         _row(fetch_gold.GRAM, date(2024, 1, 2), 1929.0, usdtry=30.0)],
                                        columns=fetch_gold.COLUMNS))
-    conn = _FakeConn()
-    assert fetch_gold.load(conn, df) == 2
-    sql, rows = conn.executed[0]
-    assert "raw.gold_prices" in sql and "ON CONFLICT (instrument, price_date, source) DO UPDATE" in sql
-    assert len(rows[0]) == 9 and conn.commits == 1
+    assert fetch_gold.load(fake_conn, df).inserted == 2
+    assert any("INSERT INTO raw.gold_prices" in sql and "ON CONFLICT (instrument, price_date, source) DO UPDATE"
+               in sql for sql in fake_conn.executed)
+    assert len(fake_conn.copied[0]) == 9 and fake_conn.commits == 1
+    ounce_row = next(r for r in fake_conn.copied if r[0] == fetch_gold.OUNCE)
+    assert ounce_row[-1] is None  # ons satirinda usdtry NULL
 
 
-def test_load_empty_is_noop():
-    conn = _FakeConn()
-    assert fetch_gold.load(conn, pd.DataFrame(columns=fetch_gold.COLUMNS)) == 0
-    assert conn.executed == []
+def test_load_empty_is_noop(fake_conn):
+    assert fetch_gold.load(fake_conn, pd.DataFrame(columns=fetch_gold.COLUMNS)).total == 0
+    assert fake_conn.executed == []
 
 
 def test_parse_args():

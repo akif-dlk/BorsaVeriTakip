@@ -30,11 +30,12 @@ import yfinance as yf
 
 from bvt import config
 from bvt.fetch_stocks import chunk_ranges
+from bvt.raw_loader import GOLD_PRICES, LoadResult, load_frame
 from bvt.retry import retry
 
 log = logging.getLogger("bvt.fetch_gold")
 
-COLUMNS = ["instrument", "price_date", "source", "currency", "open", "high", "low", "close", "usdtry"]
+COLUMNS = list(GOLD_PRICES.columns)
 OHLC = ["open", "high", "low", "close"]
 
 OUNCE = "XAUUSD_OZ"
@@ -191,24 +192,9 @@ def fetch_range(start: date, end: date) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- yükleme
-UPSERT_SQL = """
-INSERT INTO raw.gold_prices (instrument, price_date, source, currency, open, high, low, close, usdtry)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (instrument, price_date, source) DO UPDATE
-SET currency = EXCLUDED.currency, open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-    close = EXCLUDED.close, usdtry = EXCLUDED.usdtry, fetched_at = now()
-"""
-
-
-def load(conn, df: pd.DataFrame) -> int:
-    """Satırları raw.gold_prices'a upsert eder; aynı gün tekrar çalışırsa kopya oluşmaz."""
-    if df.empty:
-        return 0
-    rows = [tuple(r) for r in df[COLUMNS].itertuples(index=False, name=None)]
-    with conn.cursor() as cur:
-        cur.executemany(UPSERT_SQL, rows)
-    conn.commit()
-    return len(rows)
+def load(conn, df: pd.DataFrame) -> LoadResult:
+    """Satırları raw.gold_prices'a idempotent upsert eder (bkz. bvt.raw_loader); tekrar çalışmada kopya oluşmaz."""
+    return load_frame(conn, GOLD_PRICES, df)
 
 
 # --------------------------------------------------------------------------- orkestrasyon
@@ -239,19 +225,19 @@ def run(start: date, end: date, dry_run: bool = False, chunk_days: int = CHUNK_D
 
     from bvt.db import connect, finish_run, start_run
 
-    total = 0
+    total = LoadResult()
     with connect() as conn:
-        run_id = start_run(conn, "gold")
+        run_id = start_run(conn, "gold", start, end)
         try:
             for df in iter_chunks(start, end, chunk_days):
                 total += load(conn, df)
         except Exception as exc:
             conn.rollback()
-            finish_run(conn, run_id, "failed", rows_loaded=total, error=str(exc)[:1000])
+            finish_run(conn, run_id, "failed", total, error=str(exc)[:1000])
             raise
-        finish_run(conn, run_id, "success", rows_loaded=total)
-    log.info("raw.gold_prices: %d satır upsert edildi", total)
-    return total
+        finish_run(conn, run_id, "success", total)
+    log.info("raw.gold_prices: %s", total)
+    return total.total
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
