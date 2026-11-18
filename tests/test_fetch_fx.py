@@ -144,3 +144,12 @@ def test_retry_gives_up_after_attempts():
         flaky()
     assert len(calls) == 3 and len(sleeps) == 2
     assert 1 <= sleeps[0] < 1.6 and 2 <= sleeps[1] < 2.6  # üstel bekleme
+
+
+def test_fetch_evds_empty_base_url_falls_back_to_default(monkeypatch):
+    # .env.example / docker-compose boş `EVDS_BASE_URL=` geçirir; adres "/" olmamalı.
+    seen = {}
+    monkeypatch.setenv("EVDS_BASE_URL", "")
+    monkeypatch.setattr(fetch_fx, "_get_evds", lambda url, key: seen.setdefault("url", url) and {"items": []})
+    fetch_fx.fetch_evds(date(2024, 1, 2), date(2024, 1, 3), "dummy")
+    assert seen["url"].startswith(fetch_fx.EVDS_DEFAULT_URL + "series=")

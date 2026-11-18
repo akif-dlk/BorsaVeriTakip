@@ -53,6 +53,31 @@ BVT_TEST_PG=1 python -m pytest -q tests/test_raw_loader_pg.py   # gerçek Postgr
 `ops.pipeline_runs` tablosuna kaydeder. Uzun geçmiş yüklemeleri parçalara bölünür; her parça
 ayrı istekle çekilip hemen yüklenir ve parçalar arasında kısa bekleme yapılır. `EVDS_API_KEY` doluysa TCMB gösterge kuru ikinci kaynak olarak eklenir.
 
+## Airflow: günlük orkestrasyon
+
+`docker compose up -d` PostgreSQL'i ve Airflow'u (LocalExecutor, ayrı metadata veritabanı) ayağa kaldırır.
+`airflow-init` tek seferlik çalışır: Airflow metadata şemasını taşır, yönetici kullanıcıyı oluşturur ve proje
+şemasını (`sql/init`) uygular.
+
+```bash
+cp .env.example .env
+docker compose up -d --build        # ilk açılış birkaç dakika sürer (imaj derlenir)
+# Arayüz: http://localhost:8080  (kullanıcı/şifre: .env'deki AIRFLOW_ADMIN_USER / AIRFLOW_ADMIN_PASSWORD)
+docker compose exec airflow-scheduler airflow dags list-import-errors
+docker compose exec airflow-scheduler airflow dags trigger bvt_daily_prices   # elle tetikleme
+```
+
+`bvt_daily_prices` DAG'i Pzt-Cum 19:30'da (İstanbul) çalışır; `fetch_fx`, `fetch_stocks`, `fetch_gold`
+görevleri paralel ve birbirinden bağımsızdır. Her görev çalışmanın `data_interval_end` gününden geriye
+`BVT_LOOKBACK_DAYS` (varsayılan 7) günü yeniden çeker; yükleme idempotent olduğundan bu kopya üretmez, kaçırılan
+günleri ve kaynak revizyonlarını yakalar. DAG yalnızca orkestrasyonu tanımlar; iş mantığı `bvt.pipeline` ve
+`bvt.fetch_*` modüllerindedir. Aynı günlük pencere Airflow olmadan da çalıştırılabilir:
+
+```bash
+PYTHONPATH=src python -m bvt.pipeline                              # üç kaynak, bugünle biten pencere
+PYTHONPATH=src python -m bvt.pipeline --source fx gold --lookback-days 3
+```
+
 ## Belgeler
 
 - [Mimari](docs/architecture.md)
@@ -62,9 +87,10 @@ ayrı istekle çekilip hemen yüklenir ve parçalar arasında kısa bekleme yap�
 ## Repo yapısı
 
 ```
-├── docker-compose.yml   # servisler (şimdilik PostgreSQL)
+├── docker-compose.yml   # servisler: PostgreSQL, Airflow (webserver, scheduler, init, metadata DB)
+├── airflow/             # Dockerfile (Airflow + proje bağımlılıkları), dags/
 ├── sql/init/            # ilk açılışta çalışan şema betikleri
-├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler
+├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline
 ├── docs/                # mimari, kaynaklar, yol haritası
 └── tests/
 ```

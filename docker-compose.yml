@@ -1,5 +1,45 @@
 name: borsaveritakip
 
+# Airflow servislerinin ortak ayarları (LocalExecutor, metadata için ayrı PostgreSQL).
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: airflow/Dockerfile
+  image: bvt-airflow:2.10.5
+  user: "${AIRFLOW_UID:-50000}:0"
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: Europe/Istanbul
+    AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: Europe/Istanbul
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-bvt-dev-only-secret}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+    TZ: Europe/Istanbul
+    # Proje paketi (bvt) ve veri veritabanı; konteyner ağı içinde port her zaman 5432
+    PYTHONPATH: /opt/bvt/src
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    POSTGRES_USER: ${POSTGRES_USER:-bvt}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bvt}
+    POSTGRES_DB: ${POSTGRES_DB:-borsa}
+    EVDS_API_KEY: ${EVDS_API_KEY:-}
+    EVDS_BASE_URL: ${EVDS_BASE_URL:-}
+    BVT_LOOKBACK_DAYS: ${BVT_LOOKBACK_DAYS:-7}
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./src:/opt/bvt/src:ro
+    - ./sql:/opt/bvt/sql:ro
+  depends_on: &airflow-depends
+    postgres:
+      condition: service_healthy
+    airflow-db:
+      condition: service_healthy
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -21,5 +61,76 @@ services:
       timeout: 5s
       retries: 5
 
+  # Airflow metadata veritabanı: proje verisinden ayrı tutulur (yedekleme/sıfırlama bağımsız olsun)
+  airflow-db:
+    image: postgres:16-alpine
+    container_name: bvt-airflow-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Tek seferlik: metadata şemasını taşır, yönetici kullanıcıyı oluşturur, proje şemasını (sql/init) uygular
+  airflow-init:
+    <<: *airflow-common
+    container_name: bvt-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        airflow db migrate
+        airflow users create --role Admin --username "$${AIRFLOW_ADMIN_USER}" --password "$${AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname BVT --lastname Admin --email admin@example.com || true
+        python -m bvt.db --init
+    environment:
+      <<: *airflow-env
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: bvt-airflow-webserver
+    command: webserver
+    restart: unless-stopped
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: bvt-airflow-scheduler
+    command: scheduler
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:
+  airflow-pgdata:

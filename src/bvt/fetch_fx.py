@@ -126,7 +126,8 @@ def parse_evds(payload: dict, series: dict[str, str] = EVDS_SERIES) -> pd.DataFr
 
 
 def fetch_evds(start: date, end: date, api_key: str) -> pd.DataFrame:
-    base = os.getenv("EVDS_BASE_URL", EVDS_DEFAULT_URL).rstrip("/") + "/"
+    # Boş değişken (.env.example ve docker-compose'da `EVDS_BASE_URL=`) varsayılan adrese düşer.
+    base = (os.getenv("EVDS_BASE_URL") or EVDS_DEFAULT_URL).rstrip("/") + "/"
     url = (f"{base}series={'-'.join(EVDS_SERIES.values())}"
            f"&startDate={start:%d-%m-%Y}&endDate={end:%d-%m-%Y}&type=json")
     return clean(parse_evds(_get_evds(url, api_key)))

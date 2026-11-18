@@ -6,7 +6,7 @@
 - [x] Gün 3: BIST hisse çekici (8 hisse + BIST100), geçmiş veri → `fetch_stocks.py`
 - [x] Gün 4: Altın çekici, gram altın hesabı → `fetch_gold.py`
 - [x] Gün 5: Raw şema, idempotent upsert → `raw_loader.py`
-- [ ] Gün 6: Airflow kurulumu, günlük DAG
+- [x] Gün 6: Airflow kurulumu, günlük DAG → `bvt_daily_prices`
 - [ ] Gün 7: Retry, loglama, backfill, tatil boşlukları
 
 ## Hafta 2: Dönüşüm ve modelleme
