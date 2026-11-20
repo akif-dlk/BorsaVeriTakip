@@ -7,7 +7,7 @@
 - [x] Gün 4: Altın çekici, gram altın hesabı → `fetch_gold.py`
 - [x] Gün 5: Raw şema, idempotent upsert → `raw_loader.py`
 - [x] Gün 6: Airflow kurulumu, günlük DAG → `bvt_daily_prices`
-- [ ] Gün 7: Retry, loglama, backfill, tatil boşlukları
+- [x] Gün 7: Retry, loglama, backfill, tatil boşlukları
 
 ## Hafta 2: Dönüşüm ve modelleme
 - [ ] Gün 8: dbt kurulumu, `stg_*` modelleri

@@ -35,7 +35,8 @@ Yükleme sözleşmesi (`bvt.raw_loader`, `sql/init/005_raw_idempotency.sql`):
 - `ops.pipeline_runs`: `rows_loaded` = `rows_inserted` + `rows_updated` + `rows_unchanged`; istenen tarih
   aralığı `window_start`/`window_end` sütunlarında tutulur.
 
-Hafta sonu ve resmî tatillerde satır oluşmaz; boşluklar staging katmanında ele alınır.
+Hafta sonu ve resmî tatillerde satır oluşmaz. `bvt.gaps` bu günleri veriye bakarak `market_closed` olarak
+işaretler ve gerçek eksiklerden (`missing`) ayırır (`ops.data_gaps`); takvim hizalaması dbt katmanında yapılır.
 
 Notlar (BIST):
 - `close` ham kapanış, `adj_close` temettü/bedelsiz sermaye artırımı düzeltmeli kapanıştır; getiri ve

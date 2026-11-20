@@ -20,3 +20,10 @@ BIST_TICKERS = ["THYAO.IS", "GARAN.IS", "ASELS.IS", "BIMAS.IS", "KCHOL.IS", "SIS
 BIST_INDEX = "XU100.IS"
 GOLD_OUNCE = "GC=F"
 TROY_OUNCE_GRAMS = 31.1034768
+# raw.gold_prices enstrümanları: ons (yfinance, USD) ve hesaplanan gram altın (TRY)
+GOLD_INSTRUMENTS = ("XAUUSD_OZ", "XAUTRY_GRAM")
+
+
+def bist_symbols() -> list[str]:
+    """raw.stock_prices'taki sembol biçimi (`.IS` soneksiz), endeks dahil."""
+    return [t.upper().removesuffix(".IS") for t in [*BIST_TICKERS, BIST_INDEX]]

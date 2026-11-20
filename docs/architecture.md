@@ -43,7 +43,17 @@ flowchart LR
 | `staging` | Temizlenmiş, tipleri düzeltilmiş `stg_*` görünümleri | dbt |
 | `marts` | Star schema + göstergeler, korelasyonlar | dbt |
 | `streaming` | Dakikalık fiyatlar ve pencere ortalamaları | Kafka consumer |
-| `ops` | Pipeline çalışma kayıtları, sağlık durumu | Airflow |
+| `ops` | `pipeline_runs` (çalışma kayıtları + tetikleyici), `data_gaps` (tatil / eksik gün raporu) | Python çekiciler, Airflow |
+
+## Geçmiş yükleme ve boşluklar
+
+- `bvt.backfill` aralığı 365 günlük parçalara böler, parçalar arasında bekler, her parçayı ayrı çalışma
+  (`run_trigger='backfill'`) olarak kaydeder. `ops.pipeline_runs`'ta başarılı bir pencerenin kapsadığı parçalar
+  atlanır (devam ettirilebilir). İlk hatada durur (kaynak büyük olasılıkla hız sınırında).
+- `bvt.gaps` tatil takvimi tutmaz, veriden çıkarır: iş gününde kaynağın hiçbir enstrümanında veri yoksa
+  `market_closed`, bir kısmında yoksa `missing`. Enstrümanın ilk görüldüğü tarihten öncesi sayılmaz.
+  `--repair-gaps` yalnızca `missing` günleri (yakın günleri birleştirerek) yeniden çeker.
+- Fiyat serilerindeki tatil boşluklarının takvime hizalanması / ileri doldurulması dbt katmanında (`dim_date`).
 
 ## Orkestrasyon (Airflow)
 
@@ -55,5 +65,9 @@ flowchart LR
   `PythonOperator` görevi `bvt.pipeline.run_daily(kaynak, data_interval_end)` çağırır. Pencere: son
   `BVT_LOOKBACK_DAYS` gün (idempotent yeniden çekim). Görev özeti (kaynak, pencere, satır sayısı) XCom'a,
   ayrıntılı sayımlar `ops.pipeline_runs`'a yazılır.
+- **Boşluk kontrolü:** `check_gaps` görevi üç çekimden sonra (`trigger_rule=all_done`, biri düşse de) çalışır,
+  son `BVT_GAP_CHECK_DAYS` günü `bvt.gaps` ile sınıflandırıp `ops.data_gaps`'e yazar; görevi düşürmez.
+- **Retry:** istek düzeyinde `bvt.retry` (üstel bekleme, yalnızca geçici hatalar, hız sınırında ≥30 sn), görev
+  düzeyinde Airflow (`retries=2`, `retry_exponential_backoff`, `max_retry_delay=30 dk`).
 - DAG dosyası projeden üst düzeyde yalnızca `bvt.pipeline`ı içe aktarır (o da yalnızca standart kütüphane kullanır; scheduler ayrıştırması hızlı kalır);
   pandas/yfinance görev çalışırken yüklenir.

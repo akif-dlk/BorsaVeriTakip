@@ -25,21 +25,20 @@ from collections.abc import Iterator
 from datetime import date, timedelta
 
 import pandas as pd
-import requests
 import yfinance as yf
 
 from bvt import config
 from bvt.fetch_stocks import chunk_ranges
 from bvt.raw_loader import GOLD_PRICES, LoadResult, load_frame
-from bvt.retry import retry
+from bvt.logging_setup import setup_logging
+from bvt.retry import TRANSIENT_ERRORS, retry
 
 log = logging.getLogger("bvt.fetch_gold")
 
 COLUMNS = list(GOLD_PRICES.columns)
 OHLC = ["open", "high", "low", "close"]
 
-OUNCE = "XAUUSD_OZ"
-GRAM = "XAUTRY_GRAM"
+OUNCE, GRAM = config.GOLD_INSTRUMENTS  # XAUUSD_OZ, XAUTRY_GRAM
 USDTRY_TICKER = config.FX_PAIRS["USDTRY"]
 
 # Ons tarihi için en fazla kaç gün eski kur kabul edilir (uzun tatil + hafta sonu)
@@ -56,7 +55,7 @@ class FetchError(RuntimeError):
 
 
 # --------------------------------------------------------------------------- yfinance
-@retry(attempts=4, base_delay=2.0, exceptions=(FetchError, requests.RequestException, ConnectionError))
+@retry(attempts=4, base_delay=2.0, exceptions=(FetchError, *TRANSIENT_ERRORS))
 def _download_yf(tickers: list[str], start: date, end: date) -> pd.DataFrame:
     # yfinance'te `end` hariçtir, bu yüzden +1 gün.
     raw = yf.download(
@@ -256,7 +255,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    setup_logging()
     args = parse_args(argv)
     try:
         run(args.start, args.end, args.dry_run, args.chunk_days)

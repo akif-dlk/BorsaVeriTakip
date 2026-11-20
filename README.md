@@ -68,7 +68,7 @@ docker compose exec airflow-scheduler airflow dags trigger bvt_daily_prices   # 
 ```
 
 `bvt_daily_prices` DAG'i Pzt-Cum 19:30'da (İstanbul) çalışır; `fetch_fx`, `fetch_stocks`, `fetch_gold`
-görevleri paralel ve birbirinden bağımsızdır. Her görev çalışmanın `data_interval_end` gününden geriye
+görevleri paralel ve birbirinden bağımsızdır, ardından `check_gaps` boşluk raporunu yazar. Her görev çalışmanın `data_interval_end` gününden geriye
 `BVT_LOOKBACK_DAYS` (varsayılan 7) günü yeniden çeker; yükleme idempotent olduğundan bu kopya üretmez, kaçırılan
 günleri ve kaynak revizyonlarını yakalar. DAG yalnızca orkestrasyonu tanımlar; iş mantığı `bvt.pipeline` ve
 `bvt.fetch_*` modüllerindedir. Aynı günlük pencere Airflow olmadan da çalıştırılabilir:
@@ -76,6 +76,30 @@ günleri ve kaynak revizyonlarını yakalar. DAG yalnızca orkestrasyonu tanıml
 ```bash
 PYTHONPATH=src python -m bvt.pipeline                              # üç kaynak, bugünle biten pencere
 PYTHONPATH=src python -m bvt.pipeline --source fx gold --lookback-days 3
+```
+
+## Retry, loglama, backfill ve tatil boşlukları
+
+- **Retry (iki katman):** çekiciler HTTP isteklerini üstel bekleme ile 4 kez dener (2, 4, 8 sn + jitter); hız
+  sınırı (HTTP 429 / `YFRateLimitError`) gelirse en az 30 sn beklenir. Yalnızca geçici hatalar (ağ, zaman aşımı,
+  hız sınırı, boş yanıt) yeniden denenir; programlama hataları hemen düşer. Veritabanı bağlantısı da geçici
+  hatalarda yeniden denenir. Bunlar da tükenirse Airflow görevi üstel aralıkla (5 dk → en fazla 30 dk) 2 kez
+  daha dener.
+- **Loglama:** tüm CLI'lar ortak `bvt.logging_setup` kullanır. `BVT_LOG_LEVEL`, `BVT_LOG_FORMAT=json` (tek satır
+  JSON: zaman, seviye, kaynak, pencere, satır sayısı, süre, tetikleyici). Her çalışma `ops.pipeline_runs`'a
+  tetikleyicisiyle (`manual` / `airflow` / `backfill` / `repair`) yazılır.
+- **Backfill:** parça parça, rate limit dostu ve **devam ettirilebilir**: başarıyla yüklenmiş parçalar atlanır,
+  yarıda kalan iş aynı komutla sürer.
+- **Tatil boşlukları:** hafta sonu yok sayılır; bir iş gününde kaynağın hiçbir enstrümanında veri yoksa
+  `market_closed` (tatil), diğerlerinde var ama bir enstrümanda yoksa `missing` (gerçek eksik) olarak
+  `ops.data_gaps`'e yazılır. DAG her çalışmadan sonra son 30 günü kontrol eder (`check_gaps` görevi).
+
+```bash
+PYTHONPATH=src python -m bvt.backfill --start 2018-01-01                    # üç kaynak, kaldığı yerden devam eder
+PYTHONPATH=src python -m bvt.backfill --source stocks --start 2015-01-01 --pause 5 --dry-run   # yalnızca plan
+PYTHONPATH=src python -m bvt.gaps --days 90 --show-closed                   # boşluk raporu
+PYTHONPATH=src python -m bvt.backfill --repair-gaps --days 90               # gerçek eksikleri yeniden çek
+BVT_LOG_FORMAT=json PYTHONPATH=src python -m bvt.pipeline --source fx       # JSON log
 ```
 
 ## Belgeler
@@ -90,7 +114,7 @@ PYTHONPATH=src python -m bvt.pipeline --source fx gold --lookback-days 3
 ├── docker-compose.yml   # servisler: PostgreSQL, Airflow (webserver, scheduler, init, metadata DB)
 ├── airflow/             # Dockerfile (Airflow + proje bağımlılıkları), dags/
 ├── sql/init/            # ilk açılışta çalışan şema betikleri
-├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline
+├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry
 ├── docs/                # mimari, kaynaklar, yol haritası
 └── tests/
 ```

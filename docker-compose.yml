@@ -29,6 +29,8 @@ x-airflow-common: &airflow-common
     EVDS_API_KEY: ${EVDS_API_KEY:-}
     EVDS_BASE_URL: ${EVDS_BASE_URL:-}
     BVT_LOOKBACK_DAYS: ${BVT_LOOKBACK_DAYS:-7}
+    BVT_GAP_CHECK_DAYS: ${BVT_GAP_CHECK_DAYS:-30}
+    BVT_LOG_LEVEL: ${BVT_LOG_LEVEL:-INFO}
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs

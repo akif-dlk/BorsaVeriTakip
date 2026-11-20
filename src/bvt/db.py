@@ -11,6 +11,8 @@ import psycopg
 
 from bvt.config import pg_dsn
 from bvt.raw_loader import LoadResult
+from bvt.retry import retry_call
+from bvt.run_context import current_trigger
 
 log = logging.getLogger(__name__)
 
@@ -18,8 +20,12 @@ SQL_INIT_DIR = Path(__file__).resolve().parents[2] / "sql" / "init"
 
 
 @contextmanager
-def connect():
-    with psycopg.connect(pg_dsn()) as conn:
+def connect(attempts: int = 3):
+    """Veri veritabanına bağlanır. Geçici bağlantı hatalarında (ör. konteyner yeni açılıyor) üstel bekleme
+    ile yeniden dener; sorgu hataları yeniden denenmez."""
+    conn = retry_call(psycopg.connect, pg_dsn(), attempts=attempts, base_delay=2.0, max_delay=15.0,
+                      exceptions=(psycopg.OperationalError,))
+    with conn:
         yield conn
 
 
@@ -39,10 +45,14 @@ def init_schema(conn: psycopg.Connection, sql_dir: Path = SQL_INIT_DIR) -> list[
 
 def start_run(conn: psycopg.Connection, source: str, window_start: date | None = None,
               window_end: date | None = None) -> int:
-    """ops.pipeline_runs'a 'running' kaydı açar ve run_id döner."""
+    """ops.pipeline_runs'a 'running' kaydı açar ve run_id döner.
+
+    Tetikleyici (manual / airflow / backfill / repair) `bvt.run_context`'ten alınır.
+    """
     run_id = conn.execute(
-        "INSERT INTO ops.pipeline_runs (source, window_start, window_end) VALUES (%s, %s, %s) RETURNING run_id",
-        (source, window_start, window_end),
+        "INSERT INTO ops.pipeline_runs (source, window_start, window_end, run_trigger) VALUES (%s, %s, %s, %s) "
+        "RETURNING run_id",
+        (source, window_start, window_end, current_trigger()),
     ).fetchone()[0]
     conn.commit()
     return run_id

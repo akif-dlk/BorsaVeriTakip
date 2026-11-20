@@ -20,12 +20,12 @@ from collections.abc import Iterator
 from datetime import date, timedelta
 
 import pandas as pd
-import requests
 import yfinance as yf
 
-from bvt import config
+from bvt import config, dates
 from bvt.raw_loader import STOCK_PRICES, LoadResult, load_frame
-from bvt.retry import retry
+from bvt.logging_setup import setup_logging
+from bvt.retry import TRANSIENT_ERRORS, retry
 
 log = logging.getLogger("bvt.fetch_stocks")
 
@@ -65,7 +65,7 @@ def select_tickers(symbols: list[str] | None) -> dict[str, str]:
 
 
 # --------------------------------------------------------------------------- yfinance
-@retry(attempts=4, base_delay=2.0, exceptions=(FetchError, requests.RequestException, ConnectionError))
+@retry(attempts=4, base_delay=2.0, exceptions=(FetchError, *TRANSIENT_ERRORS))
 def _download_yf(tickers: list[str], start: date, end: date) -> pd.DataFrame:
     # yfinance'te `end` hariçtir, bu yüzden +1 gün.
     raw = yf.download(
@@ -159,16 +159,8 @@ def fetch_range(start: date, end: date, tickers: dict[str, str] | None = None) -
 
 
 def chunk_ranges(start: date, end: date, chunk_days: int = CHUNK_DAYS) -> Iterator[tuple[date, date]]:
-    """[start, end] aralığını en fazla `chunk_days` günlük, örtüşmeyen parçalara böler (uçlar dahil)."""
-    if start > end:
-        raise ValueError(f"start ({start}) end'den ({end}) sonra olamaz")
-    if chunk_days < 1:
-        raise ValueError("chunk_days >= 1 olmalı")
-    cur = start
-    while cur <= end:
-        stop = min(end, cur + timedelta(days=chunk_days - 1))
-        yield cur, stop
-        cur = stop + timedelta(days=1)
+    """[start, end] aralığını en fazla `chunk_days` günlük parçalara böler (bkz. bvt.dates.chunk_ranges)."""
+    return dates.chunk_ranges(start, end, chunk_days)
 
 
 # --------------------------------------------------------------------------- yükleme
@@ -240,7 +232,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    setup_logging()
     args = parse_args(argv)
     try:
         run(args.start, args.end, args.symbols, args.dry_run, args.chunk_days)

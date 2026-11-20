@@ -28,8 +28,43 @@ def test_start_run_records_window():
     conn = _Conn()
     assert db.start_run(conn, "fx", date(2024, 1, 1), date(2024, 1, 31)) == 42
     sql, params = conn.calls[0]
-    assert "window_start, window_end" in sql and params == ("fx", date(2024, 1, 1), date(2024, 1, 31))
+    assert "window_start, window_end, run_trigger" in sql
+    assert params == ("fx", date(2024, 1, 1), date(2024, 1, 31), "manual")
     assert conn.commits == 1
+
+
+def test_start_run_records_trigger_from_context():
+    from bvt.run_context import run_trigger
+
+    conn = _Conn()
+    with run_trigger("backfill"):
+        db.start_run(conn, "stocks")
+    assert conn.calls[0][1][-1] == "backfill"
+
+
+def test_connect_retries_transient_errors(monkeypatch):
+    import psycopg
+
+    attempts = []
+
+    class _C:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_connect(dsn):
+        attempts.append(dsn)
+        if len(attempts) < 3:
+            raise psycopg.OperationalError("connection refused")
+        return _C()
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect)
+    monkeypatch.setattr("bvt.retry.time.sleep", lambda s: None)
+    with db.connect() as conn:
+        assert isinstance(conn, _C)
+    assert len(attempts) == 3
 
 
 def test_finish_run_writes_load_breakdown():

@@ -62,3 +62,23 @@ def test_stock_and_gold_upsert_with_nulls(conn):
     gold = [("XAUUSD_OZ", D, "test", "USD", None, None, None, 290.0, None)]
     assert raw_loader.load_rows(conn, GOLD_PRICES, gold, commit=False).inserted == 1
     assert raw_loader.load_rows(conn, GOLD_PRICES, gold, commit=False).unchanged == 1
+
+
+def test_gap_detection_and_snapshot(conn):
+    from datetime import timedelta
+
+    from bvt import gaps
+
+    # 1999-01-04 Pazartesi. TEST_A her gün var; TEST_B Çarşamba yok; Perşembe ikisi de yok (tatil).
+    days = [D + timedelta(days=i) for i in range(5)]
+    rows = [("TEST_A", d, "yfinance", 1, 1, 1, 1, 1, 1) for d in days if d != days[3]]
+    rows += [("TEST_B", d, "yfinance", 1, 1, 1, 1, 1, 1) for d in days if d not in (days[2], days[3])]
+    raw_loader.load_rows(conn, STOCK_PRICES, rows, commit=False)
+    observed, first = gaps.observed_dates(conn, "stocks", days[0], days[4])
+    found = gaps.find_gaps("stocks", observed, first, days[0], days[4], ["TEST_A", "TEST_B"])
+    assert [(g.gap_date, g.instrument, g.kind) for g in found] == [
+        (days[2], "TEST_B", gaps.MISSING), (days[3], "*", gaps.MARKET_CLOSED)]
+    conn.commit = lambda: None  # save_gaps commit eder; testte geri alınabilir kalsın
+    gaps.save_gaps(conn, "stocks", days[0], days[4], found)
+    gaps.save_gaps(conn, "stocks", days[0], days[4], found)  # anlık görüntü: tekrar yazım kopya üretmez
+    assert _count(conn, "ops.data_gaps", "source = 'stocks' AND gap_date BETWEEN %s AND %s", (days[0], days[4])) == 2

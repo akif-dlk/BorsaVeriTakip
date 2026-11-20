@@ -20,6 +20,7 @@ import importlib
 import logging
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -59,26 +60,58 @@ def daily_window(run_end: datetime | date, lookback: int | None = None) -> tuple
     return end - timedelta(days=lookback_days(lookback)), end
 
 
-def run_source(source: str, start: date, end: date) -> int:
+def run_source(source: str, start: date, end: date, trigger: str = "manual") -> int:
     """Tek bir kaynağın çekicisini çalıştırır, yüklenen (tekilleştirilmiş) satır sayısını döner.
 
+    `trigger` (manual / airflow / backfill / repair) `ops.pipeline_runs.run_trigger`'a ve JSON loglara yazılır.
     Hata yutulmaz: çekici `ops.pipeline_runs`'a 'failed' yazıp hatayı yeniden fırlatır, Airflow görevi de
-    böylece başarısız sayılır.
+    böylece başarısız sayılır (ve Airflow'un görev düzeyindeki retry'ı devreye girer).
     """
     if source not in SOURCES:
         raise ValueError(f"Bilinmeyen kaynak: {source!r}. Geçerli: {sorted(SOURCES)}")
     if start > end:
         raise ValueError(f"start ({start}) end'den ({end}) sonra olamaz")
+    from bvt.run_context import run_trigger
+
     module = importlib.import_module(SOURCES[source])
-    log.info("%s: %s..%s çekiliyor", source, start, end)
-    return module.run(start, end)
+    fields = {"source": source, "window_start": start.isoformat(), "window_end": end.isoformat()}
+    log.info("%s: %s..%s çekiliyor (%s)", source, start, end, trigger, extra=fields)
+    began = time.monotonic()
+    with run_trigger(trigger):
+        try:
+            rows = module.run(start, end)
+        except Exception as exc:
+            log.error("%s: %s..%s başarısız (%.1f sn): %s", source, start, end, time.monotonic() - began, exc,
+                      extra={**fields, "duration_s": round(time.monotonic() - began, 1)})
+            raise
+    duration = time.monotonic() - began
+    log.info("%s: %d satır, %.1f sn", source, rows, duration, extra={**fields, "rows": rows,
+                                                                      "duration_s": round(duration, 1)})
+    return rows
 
 
-def run_daily(source: str, run_end: datetime | date, lookback: int | None = None) -> dict:
+def run_daily(source: str, run_end: datetime | date, lookback: int | None = None, trigger: str = "manual") -> dict:
     """Airflow görevinin çağırdığı fonksiyon. Dönen sözlük XCom'a yazılır (küçük ve JSON uyumlu)."""
     start, end = daily_window(run_end, lookback)
-    rows = run_source(source, start, end)
+    rows = run_source(source, start, end, trigger)
     return {"source": source, "start": start.isoformat(), "end": end.isoformat(), "rows": rows}
+
+
+def check_gaps(run_end: datetime | date, days: int | None = None) -> dict:
+    """Son `BVT_GAP_CHECK_DAYS` (varsayılan 30) günün boşluk raporunu ops.data_gaps'e yazar, özeti döner.
+
+    Görevi düşürmez: gerçek eksikler WARNING olarak loglanır; onarım `python -m bvt.backfill --repair-gaps`
+    ile, alarm Gün 13'te eklenir.
+    """
+    from bvt import gaps
+
+    if days is None:
+        days = int(os.getenv("BVT_GAP_CHECK_DAYS") or gaps.DEFAULT_CHECK_DAYS)
+    end = market_date(run_end)
+    start = end - timedelta(days=days)
+    result = gaps.check(list(SOURCES), start, end)
+    return {"start": start.isoformat(), "end": end.isoformat(),
+            **{source: gaps.summarize(found) for source, found in result.items()}}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -93,15 +126,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from bvt.logging_setup import setup_logging
+
+    setup_logging()
     args = parse_args(argv)
     run_end = args.end or datetime.now(MARKET_TZ)
     failed = []
     for source in args.source:  # bir kaynağın hatası diğerlerini durdurmaz (DAG'deki paralel görevler gibi)
         try:
             log.info("%s", run_daily(source, run_end, args.lookback_days))
-        except Exception as exc:  # noqa: BLE001
-            log.error("%s başarısız: %s", source, exc)
+        except Exception:  # noqa: BLE001 - ayrıntı run_source'ta loglandı
             failed.append(source)
     return 1 if failed else 0
 

@@ -23,7 +23,8 @@ import yfinance as yf
 
 from bvt import config
 from bvt.raw_loader import FX_RATES, LoadResult, load_frame
-from bvt.retry import retry
+from bvt.logging_setup import setup_logging
+from bvt.retry import TRANSIENT_ERRORS, retry
 
 log = logging.getLogger("bvt.fetch_fx")
 
@@ -39,7 +40,7 @@ class FetchError(RuntimeError):
 
 
 # --------------------------------------------------------------------------- yfinance
-@retry(attempts=4, base_delay=2.0, exceptions=(FetchError, requests.RequestException, ConnectionError))
+@retry(attempts=4, base_delay=2.0, exceptions=(FetchError, *TRANSIENT_ERRORS))
 def _download_yf(tickers: list[str], start: date, end: date) -> pd.DataFrame:
     # Tek istekte toplu indirme (rate limit dostu). yfinance'te `end` hariçtir, bu yüzden +1 gün.
     raw = yf.download(
@@ -97,7 +98,7 @@ def fetch_yfinance(start: date, end: date, pairs: dict[str, str] | None = None) 
 
 
 # --------------------------------------------------------------------------- EVDS
-@retry(attempts=3, base_delay=2.0, exceptions=(requests.RequestException, FetchError))
+@retry(attempts=3, base_delay=2.0, exceptions=(FetchError, *TRANSIENT_ERRORS))
 def _get_evds(url: str, api_key: str) -> dict:
     # EVDS anahtarı URL'de değil, `key` başlığında gönderilir (anahtar loglara/URL'lere sızmasın).
     resp = requests.get(url, headers={"key": api_key}, timeout=30)
@@ -211,7 +212,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    setup_logging()
     args = parse_args(argv)
     try:
         run(args.start, args.end, args.dry_run)

@@ -102,3 +102,47 @@ def test_main_continues_after_failure(monkeypatch, fake_fetchers):
 def test_main_selected_sources(fake_fetchers):
     assert pipeline.main(["--source", "gold", "--end", "2026-11-18", "--lookback-days", "0"]) == 0
     assert fake_fetchers == [("gold", date(2026, 11, 18), date(2026, 11, 18))]
+
+
+def test_run_source_sets_trigger_for_fetcher(monkeypatch):
+    from bvt.run_context import current_trigger
+
+    seen = []
+    fake = types.ModuleType("bvt.fetch_fx")
+    fake.run = lambda start, end: seen.append(current_trigger()) or 3
+    monkeypatch.setitem(sys.modules, "bvt.fetch_fx", fake)
+    assert pipeline.run_source("fx", date(2026, 11, 1), date(2026, 11, 2), trigger="backfill") == 3
+    assert seen == ["backfill"] and current_trigger() == "manual"
+
+
+def test_run_source_logs_failure_with_duration(monkeypatch, caplog):
+    fake = types.ModuleType("bvt.fetch_gold")
+
+    def boom(start, end):
+        raise RuntimeError("yahoo 500")
+
+    fake.run = boom
+    monkeypatch.setitem(sys.modules, "bvt.fetch_gold", fake)
+    with pytest.raises(RuntimeError):
+        pipeline.run_source("gold", date(2026, 11, 1), date(2026, 11, 2))
+    rec = next(r for r in caplog.records if r.levelname == "ERROR")
+    assert rec.source == "gold" and hasattr(rec, "duration_s")
+
+
+def test_check_gaps_summary(monkeypatch):
+    from bvt import gaps
+    from bvt.gaps import MISSING, Gap
+
+    calls = {}
+
+    def fake_check(sources, start, end):
+        calls.update(sources=sources, start=start, end=end)
+        return {s: [Gap(s, end, "X", MISSING)] if s == "stocks" else [] for s in sources}
+
+    monkeypatch.setattr(gaps, "check", fake_check)
+    monkeypatch.delenv("BVT_GAP_CHECK_DAYS", raising=False)
+    out = pipeline.check_gaps(datetime(2026, 11, 18, 16, 30, tzinfo=timezone.utc))
+    assert calls == {"sources": list(pipeline.SOURCES), "start": date(2026, 10, 19), "end": date(2026, 11, 18)}
+    assert out["stocks"]["missing"] == 1 and out["fx"]["missing"] == 0 and out["end"] == "2026-11-18"
+    monkeypatch.setenv("BVT_GAP_CHECK_DAYS", "5")
+    assert pipeline.check_gaps(date(2026, 11, 18))["start"] == "2026-11-13"
