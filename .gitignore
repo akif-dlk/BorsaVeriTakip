@@ -22,3 +22,6 @@ airflow/logs/
 .idea/
 .vscode/
 .DS_Store
+
+# borsa_ajansi
+*.db

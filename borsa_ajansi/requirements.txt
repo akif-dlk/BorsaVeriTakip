@@ -1,0 +1,19 @@
+anthropic>=2.12
+langgraph>=1.2
+pydantic>=2.14
+pandas>=3.0
+numpy>=2.0
+yfinance>=1.8
+ta>=0.11
+feedparser>=6.0
+python-dotenv>=1.0
+python-telegram-bot>=22.0
+APScheduler>=3.11,<4
+requests>=2.32
+# test
+pytest>=9.0
+pytest-asyncio>=1.0
+# Windows Akıllı Uygulama Denetimi bazı yeni wheel DLL'lerini engelliyor; çalıştığı doğrulanan sürümler:
+jiter==0.10.0
+ormsgpack==1.13.0
+tzdata>=2024.1
