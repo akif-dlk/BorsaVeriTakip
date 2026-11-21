@@ -113,3 +113,18 @@ def test_task_callable_uses_data_interval_end(dag_module, monkeypatch):
     # Airflow bağlamı anahtar kelime argümanları olarak geçirir; fazlası **context ile yutulur.
     assert task.python_callable(**task.op_kwargs, data_interval_end=end, ti=object(), ds="2026-11-18") == {"rows": 1}
     assert seen == {"source": "fx", "run_end": end, "trigger": "airflow"}
+
+
+def test_dbt_staging_runs_after_fetches_even_on_failure(dag_module):
+    task = next(t for t in dag_module.dag.tasks if t.task_id == "dbt_build_staging")
+    assert [t.task_id for t in task.upstream] == [f"fetch_{s}" for s in pipeline.SOURCES]
+    assert task.kwargs["trigger_rule"] == "all_done"
+    assert task.kwargs["retries"] == 0
+
+
+def test_dbt_staging_callable(dag_module, monkeypatch):
+    from bvt import dbt_runner
+
+    monkeypatch.setattr(dbt_runner, "build_staging", lambda: {"pass": 3})
+    task = next(t for t in dag_module.dag.tasks if t.task_id == "dbt_build_staging")
+    assert task.python_callable(ti=object(), ds="2026-11-18") == {"pass": 3}

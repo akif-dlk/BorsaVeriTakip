@@ -10,7 +10,7 @@ Python + PostgreSQL + Airflow + dbt + Kafka + FastAPI + Streamlit, hepsi Docker 
 ```bash
 cp .env.example .env
 docker compose up -d postgres
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # çalışma zamanı + test bağımlılıkları
 PYTHONPATH=src python -m bvt.db --init   # bağlantıyı test eder, sql/init şemalarını uygular
 ```
 
@@ -102,6 +102,28 @@ PYTHONPATH=src python -m bvt.backfill --repair-gaps --days 90               # ge
 BVT_LOG_FORMAT=json PYTHONPATH=src python -m bvt.pipeline --source fx       # JSON log
 ```
 
+## dbt: staging katmanı
+
+dbt projesi `dbt/` altındadır. `raw.*` tabloları kaynak (`source('raw', ...)`) olarak tanımlıdır; üç staging
+görünümü (`staging.stg_fx_rates`, `stg_stock_prices`, `stg_gold_prices`) bunları **ortak bir fiyat sözleşmesine**
+çevirir: `instrument_code, asset_class, price_date, source, currency, open, high, low, close, adj_close, volume,
+is_primary_source, has_valid_ohlc, loaded_at`. Satırlar elenmez; OHLC tutarsızlığı `has_valid_ohlc` ile
+bayraklanır. Kaynak ve modeller için not-null, kabul edilen değer ve doğal anahtar tekilliği testleri vardır;
+raw tablolarda `fetched_at` üzerinden tazelik (freshness) eşiği tanımlıdır.
+
+dbt, Airflow ile bağımlılık çakışması olmasın diye **ayrı bir sanal ortama** kurulur (imajda `/opt/dbt-venv`).
+`bvt.dbt_runner` dbt'yi `.env` yüklenmiş olarak ve proje/profil dizinini vererek çağırır. Günlük DAG'de
+`dbt_build_staging` görevi üç çekimden sonra çalışır (`dbt build --select source:raw staging`).
+
+```bash
+python -m venv .venv-dbt && .venv-dbt/bin/pip install -r requirements-dbt.txt   # Windows: .venv-dbt\Scripts\pip
+export DBT_BIN=.venv-dbt/bin/dbt                                                 # PATH'te dbt varsa gerekmez
+PYTHONPATH=src python -m bvt.dbt_runner debug                                    # bağlantı kontrolü
+PYTHONPATH=src python -m bvt.dbt_runner build --select source:raw staging        # görünümler + testler
+PYTHONPATH=src python -m bvt.dbt_runner source freshness                         # raw tazelik raporu
+docker compose exec airflow-scheduler python -m bvt.dbt_runner build             # konteyner içinde
+```
+
 ## Belgeler
 
 - [Mimari](docs/architecture.md)
@@ -112,9 +134,10 @@ BVT_LOG_FORMAT=json PYTHONPATH=src python -m bvt.pipeline --source fx       # JS
 
 ```
 ├── docker-compose.yml   # servisler: PostgreSQL, Airflow (webserver, scheduler, init, metadata DB)
-├── airflow/             # Dockerfile (Airflow + proje bağımlılıkları), dags/
+├── airflow/             # Dockerfile (Airflow + proje bağımlılıkları + ayrı dbt ortamı), dags/
+├── dbt/                 # dbt projesi: models/staging (stg_*), makrolar, generic testler, profiles.yml
 ├── sql/init/            # ilk açılışta çalışan şema betikleri
-├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry
+├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry, dbt_runner
 ├── docs/                # mimari, kaynaklar, yol haritası
 └── tests/
 ```

@@ -1,0 +1,25 @@
+# BorsaVeriTakip dbt projesi: raw.* (Python çekiciler) → staging.stg_* → marts.* (Gün 9+)
+name: bvt
+version: "0.1.0"
+config-version: 2
+profile: bvt
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: target
+clean-targets: ["target", "dbt_packages"]
+
+flags:
+  send_anonymous_usage_stats: false
+  use_colors: false
+
+models:
+  bvt:
+    staging:
+      # Görünüm: raw değiştikçe her zaman günceldir, ek depolama yok. Şema adı olduğu gibi kullanılır
+      # (bkz. macros/generate_schema_name.sql) → staging.stg_*
+      +schema: staging
+      +materialized: view
+      +docs:
+        node_color: "#4a90d9"

@@ -1,0 +1,5 @@
+# dbt, Airflow ile bağımlılık çakışması olmasın diye ayrı sanal ortama kurulur:
+#   python -m venv .venv-dbt && .venv-dbt/bin/pip install -r requirements-dbt.txt   (Windows: .venv-dbt\Scripts\pip)
+# Airflow imajında /opt/dbt-venv içine kurulur (airflow/Dockerfile).
+dbt-core==1.9.4
+dbt-postgres==1.9.0

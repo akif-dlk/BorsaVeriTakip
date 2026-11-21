@@ -1,0 +1,66 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Python çekicilerin (bvt.fetch_*) idempotent upsert ile doldurduğu ham tablolar. Doğal anahtar
+      (enstrüman, tarih, kaynak) PRIMARY KEY'dir; şema sql/init/ altındadır, dbt bu tabloları oluşturmaz.
+    schema: raw
+    loaded_at_field: fetched_at
+    freshness:
+      # Hafta sonu + tek günlük tatil sığsın diye uyarı 4 gün; uzun bayram tatillerinde (Kurban/Ramazan) hata eşiği 10 gün.
+      warn_after: {count: 4, period: day}
+      error_after: {count: 10, period: day}
+    tables:
+      - name: fx_rates
+        description: Günlük döviz kurları (yfinance OHLC; EVDS yalnızca gösterge kur `close`).
+        columns:
+          - name: pair
+            data_tests: [not_null]
+          - name: rate_date
+            data_tests: [not_null]
+          - name: source
+            data_tests:
+              - not_null
+              - accepted_values: {values: ['yfinance', 'evds']}
+          - name: close
+            data_tests: [not_null]
+        data_tests:
+          - unique_combination_of_columns:
+              combination_of_columns: [pair, rate_date, source]
+
+      - name: stock_prices
+        description: Günlük BIST fiyatları (8 hisse + XU100), sembol `.IS` soneksiz.
+        columns:
+          - name: symbol
+            data_tests: [not_null]
+          - name: price_date
+            data_tests: [not_null]
+          - name: source
+            data_tests:
+              - not_null
+              - accepted_values: {values: ['yfinance']}
+          - name: close
+            data_tests: [not_null]
+        data_tests:
+          - unique_combination_of_columns:
+              combination_of_columns: [symbol, price_date, source]
+
+      - name: gold_prices
+        description: Ons altın (XAUUSD_OZ, yfinance GC=F) ve hesaplanan gram altın (XAUTRY_GRAM, derived).
+        columns:
+          - name: instrument
+            data_tests:
+              - not_null
+              - accepted_values: {values: ['XAUUSD_OZ', 'XAUTRY_GRAM']}
+          - name: price_date
+            data_tests: [not_null]
+          - name: source
+            data_tests:
+              - not_null
+              - accepted_values: {values: ['yfinance', 'derived']}
+          - name: close
+            data_tests: [not_null]
+        data_tests:
+          - unique_combination_of_columns:
+              combination_of_columns: [instrument, price_date, source]

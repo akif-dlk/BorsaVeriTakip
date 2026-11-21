@@ -10,7 +10,7 @@
 - [x] Gün 7: Retry, loglama, backfill, tatil boşlukları
 
 ## Hafta 2: Dönüşüm ve modelleme
-- [ ] Gün 8: dbt kurulumu, `stg_*` modelleri
+- [x] Gün 8: dbt kurulumu, `stg_*` modelleri
 - [ ] Gün 9: `dim_instrument`, `dim_date`, `fact_daily_prices`
 - [ ] Gün 10: SMA, EMA, RSI, volatilite → `mart_indicators`
 - [ ] Gün 11: Getiriler, haftalık/aylık özet → `mart_correlations`

@@ -1,0 +1,4 @@
+# Geliştirme ve test bağımlılıkları (çalışma zamanı: requirements.txt, dbt: requirements-dbt.txt)
+-r requirements.txt
+pytest==9.2.0
+PyYAML==6.0.2

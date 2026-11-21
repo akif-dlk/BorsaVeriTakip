@@ -31,11 +31,16 @@ x-airflow-common: &airflow-common
     BVT_LOOKBACK_DAYS: ${BVT_LOOKBACK_DAYS:-7}
     BVT_GAP_CHECK_DAYS: ${BVT_GAP_CHECK_DAYS:-30}
     BVT_LOG_LEVEL: ${BVT_LOG_LEVEL:-INFO}
+    # dbt: proje salt-okunur bağlanır; derleme çıktısı ve loglar konteyner içinde geçici dizine yazılır
+    BVT_DBT_DIR: /opt/bvt/dbt
+    DBT_TARGET_PATH: /tmp/dbt/target
+    DBT_LOG_PATH: /tmp/dbt/logs
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./src:/opt/bvt/src:ro
     - ./sql:/opt/bvt/sql:ro
+    - ./dbt:/opt/bvt/dbt:ro
   depends_on: &airflow-depends
     postgres:
       condition: service_healthy

@@ -1,0 +1,139 @@
+version: 2
+
+# Ortak fiyat sözleşmesi: üç stg_* modeli aynı sütunları aynı anlamla taşır; Gün 9'daki
+# fact_daily_prices bunları birleştirir. stg_gold_prices ek olarak `usdtry` taşır.
+
+models:
+  - name: stg_fx_rates
+    description: Günlük döviz kurları (USDTRY, EURTRY), ortak fiyat sözleşmesinde. Kaynak başına bir satır.
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [instrument_code, price_date, source]
+    columns:
+      - name: instrument_code
+        description: Enstrüman kodu (büyük harf, sonek yok).
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['USDTRY', 'EURTRY']}
+      - name: asset_class
+        description: Varlık sınıfı.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['fx']}
+      - name: price_date
+        description: İşlem günü (piyasa takvimi, İstanbul).
+        data_tests: [not_null]
+      - name: source
+        description: Verinin kaynağı.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['yfinance', 'evds']}
+      - name: currency
+        description: Fiyatın para birimi.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['TRY']}
+      - name: close
+        description: Kapanış fiyatı (> 0, raw tablodaki CHECK ile garanti).
+        data_tests: [not_null]
+      - name: adj_close
+        description: Getiri hesaplarında kullanılacak düzeltilmiş kapanış (düzeltme yoksa close).
+        data_tests: [not_null]
+      - name: is_primary_source
+        description: Aynı enstrüman-gün için birden fazla kaynak varsa marts katmanında kullanılacak kaynak.
+        data_tests: [not_null]
+      - name: has_valid_ohlc
+        description: low ≤ open/close ≤ high tutarlılığı; eksik alan tutarsızlık sayılmaz. Satır elenmez, bayraklanır.
+        data_tests: [not_null]
+      - name: loaded_at
+        description: Değerlerin raw katmana son yazıldığı an (raw.fetched_at).
+        data_tests: [not_null]
+
+  - name: stg_stock_prices
+    description: Günlük BIST hisse ve XU100 fiyatları, ortak fiyat sözleşmesinde.
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [instrument_code, price_date, source]
+    columns:
+      - name: instrument_code
+        description: Enstrüman kodu (büyük harf, sonek yok).
+        data_tests:
+          - not_null
+      - name: asset_class
+        description: Varlık sınıfı.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['stock', 'index']}
+      - name: price_date
+        description: İşlem günü (piyasa takvimi, İstanbul).
+        data_tests: [not_null]
+      - name: source
+        description: Verinin kaynağı.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['yfinance']}
+      - name: currency
+        description: Fiyatın para birimi.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['TRY']}
+      - name: close
+        description: Kapanış fiyatı (> 0, raw tablodaki CHECK ile garanti).
+        data_tests: [not_null]
+      - name: adj_close
+        description: Getiri hesaplarında kullanılacak düzeltilmiş kapanış (düzeltme yoksa close).
+        data_tests: [not_null]
+      - name: is_primary_source
+        description: Aynı enstrüman-gün için birden fazla kaynak varsa marts katmanında kullanılacak kaynak.
+        data_tests: [not_null]
+      - name: has_valid_ohlc
+        description: low ≤ open/close ≤ high tutarlılığı; eksik alan tutarsızlık sayılmaz. Satır elenmez, bayraklanır.
+        data_tests: [not_null]
+      - name: loaded_at
+        description: Değerlerin raw katmana son yazıldığı an (raw.fetched_at).
+        data_tests: [not_null]
+
+  - name: stg_gold_prices
+    description: Günlük ons (USD) ve gram (TRY) altın fiyatları, ortak fiyat sözleşmesinde.
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [instrument_code, price_date, source]
+    columns:
+      - name: instrument_code
+        description: Enstrüman kodu (büyük harf, sonek yok).
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['XAUUSD_OZ', 'XAUTRY_GRAM']}
+      - name: asset_class
+        description: Varlık sınıfı.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['gold']}
+      - name: price_date
+        description: İşlem günü (piyasa takvimi, İstanbul).
+        data_tests: [not_null]
+      - name: source
+        description: Verinin kaynağı.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['yfinance', 'derived']}
+      - name: currency
+        description: Fiyatın para birimi.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['USD', 'TRY']}
+      - name: close
+        description: Kapanış fiyatı (> 0, raw tablodaki CHECK ile garanti).
+        data_tests: [not_null]
+      - name: adj_close
+        description: Getiri hesaplarında kullanılacak düzeltilmiş kapanış (düzeltme yoksa close).
+        data_tests: [not_null]
+      - name: is_primary_source
+        description: Aynı enstrüman-gün için birden fazla kaynak varsa marts katmanında kullanılacak kaynak.
+        data_tests: [not_null]
+      - name: has_valid_ohlc
+        description: low ≤ open/close ≤ high tutarlılığı; eksik alan tutarsızlık sayılmaz. Satır elenmez, bayraklanır.
+        data_tests: [not_null]
+      - name: loaded_at
+        description: Değerlerin raw katmana son yazıldığı an (raw.fetched_at).
+        data_tests: [not_null]

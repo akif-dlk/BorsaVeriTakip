@@ -9,6 +9,7 @@ Döviz (USD/TRY, EUR/TRY), BIST (8 hisse + XU100) ve altını (ons + gram) her i
 - **Görevler:** `fetch_fx`, `fetch_stocks`, `fetch_gold` birbirinden bağımsızdır ve paralel çalışır; biri
   başarısız olursa diğerleri yine yüklenir. Her görev `ops.pipeline_runs`'a `run_trigger='airflow'` ile kayıt düşer.
   Ardından `check_gaps` (çekimler başarısız olsa da çalışır) son 30 günün boşluk raporunu `ops.data_gaps`'e yazar.
+  Paralelinde `dbt_build_staging` raw kaynak testlerini ve `staging.stg_*` görünümlerini (dbt) kurar/test eder.
 - **Retry:** iki katman. Çekici içinde HTTP isteği üstel bekleme ile 4 kez denenir (hız sınırında en az 30 sn);
   o da tükenirse Airflow görevi 5, 10 dk... (üst sınır 30 dk) arayla 2 kez daha dener.
 - İş mantığı `bvt.pipeline` / `bvt.fetch_*` modüllerindedir; bu dosya yalnızca orkestrasyonu tanımlar.
@@ -42,6 +43,13 @@ def check_gaps(data_interval_end=None, **_context) -> dict:
     return run_check(data_interval_end)
 
 
+def dbt_build_staging(**_context) -> dict:
+    """raw kaynak testleri + staging görünümleri (dbt build); test başarısızsa görev düşer. Özet XCom'a döner."""
+    from bvt.dbt_runner import build_staging
+
+    return build_staging()
+
+
 default_args = {
     "owner": "bvt",
     "retries": 2,
@@ -59,7 +67,7 @@ with DAG(
     catchup=False,  # geçmiş yükleme CLI ile parça parça yapılır (bkz. README)
     max_active_runs=1,
     default_args=default_args,
-    tags=["bvt", "raw", "daily"],
+    tags=["bvt", "raw", "dbt", "daily"],
     doc_md=__doc__,
 ) as dag:
     fetch_tasks = [
@@ -76,4 +84,12 @@ with DAG(
         trigger_rule=TriggerRule.ALL_DONE,  # bir kaynak düşse de diğerlerinin boşlukları raporlanır
         retries=0,
     )
+    staging = PythonOperator(
+        task_id="dbt_build_staging",
+        python_callable=dbt_build_staging,
+        # Görünümler raw'a bağlıdır, çekimin başarısına değil: bir kaynak düşse de katman kurulup test edilir.
+        trigger_rule=TriggerRule.ALL_DONE,
+        retries=0,  # dbt hataları (test/derleme) deterministiktir; yeniden denemek düzeltmez
+    )
     fetch_tasks >> gap_check
+    fetch_tasks >> staging
