@@ -1,3 +1,15 @@
+import os
+
+# Testler kullanıcının .env ayarlarından bağımsız, sabit varsayılanlarla çalışır
+# (load_dotenv mevcut ortam değişkenlerini ezmez; bu blok config import edilmeden önce çalışır).
+os.environ.update({
+    "MIN_DEBATE_ROUNDS": "2", "MAX_DEBATE_ROUNDS": "3", "MORNING_REPORT_ENABLED": "true",
+    "SIM_INITIAL_CASH": "10000", "SIM_DAYS": "14", "SIM_CANDIDATES": "3", "SIM_MAX_POSITIONS": "4",
+    "SIM_RISK_PER_TRADE_PCT": "2", "SIM_MAX_POSITION_PCT": "30", "SIM_COMMISSION_PCT": "0.2",
+    "SIM_SLIPPAGE_PCT": "0.1", "SIM_TRADE_HOUR": "10", "SIM_TRADE_MINUTE": "30", "SIM_EOD_HOUR": "18",
+    "SIM_EOD_MINUTE": "30", "UNIVERSE": "", "REPORT_HOUR": "9", "REPORT_MINUTE": "30",
+})
+
 import numpy as np
 import pandas as pd
 import pytest

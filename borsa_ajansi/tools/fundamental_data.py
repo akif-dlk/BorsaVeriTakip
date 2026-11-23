@@ -37,6 +37,13 @@ _FIELD_MAP = {
 }
 
 
+# Makul aralık dışı değerler (ör. yfinance'te TRY/USD karışıklığı) güvenilmez sayılır -> veri_yok
+_SANITY_BOUNDS = {
+    "pe_ratio": (0, 200), "forward_pe": (0, 200), "pb_ratio": (0, 15), "ev_ebitda": (-50, 60),
+    "profit_margin": (-2, 2), "roe": (-3, 3), "debt_to_equity": (0, 1000), "dividend_yield": (0, 30),
+}
+
+
 def fetch_yfinance_info(ticker: str) -> dict[str, Any]:
     import yfinance as yf
 
@@ -61,6 +68,14 @@ def build_fundamentals(info: dict[str, Any], extra: dict[str, Any] | None = None
     for src, dst in _FIELD_MAP.items():
         val = merged.get(src, merged.get(dst))
         out[dst] = _clean(val) if isinstance(val, (int, float)) else (val if val not in (None, "") else VERI_YOK)
+
+    suspicious = []
+    for k, (lo, hi) in _SANITY_BOUNDS.items():
+        v = out.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and not (lo <= v <= hi):
+            suspicious.append(f"{k}={v}")
+            out[k] = VERI_YOK
+    out["suspicious_values_removed"] = suspicious
 
     debt, cash, ebitda = out["total_debt"], out["total_cash"], out["ebitda"]
     if isinstance(debt, (int, float)) and isinstance(cash, (int, float)):

@@ -47,10 +47,21 @@ def raw_data_for(analyst: AnalystName, bundle: dict[str, Any]) -> dict[str, Any]
             "company_news": _titles(news.get("company_news", VERI_YOK)),
             "kap_news": _titles(news.get("kap_news", VERI_YOK)),
             "macro": {k: _titles(v, 4) for k, v in macro.items()} if isinstance(macro, dict) else VERI_YOK,
+            "market_context": bundle.get("context", VERI_YOK),
         }
     if analyst == "duygu":
         sm = bundle.get("market", {}).get("sentiment_metrics", {"status": VERI_YOK})
-        return {**sm, "date": date, "news_count": news.get("news_count", VERI_YOK) if news.get("status") == "ok" else VERI_YOK}
+        ctx = bundle.get("context", {}) or {}
+        return {
+            **sm, "date": date,
+            "news_count": news.get("news_count", VERI_YOK) if news.get("status") == "ok" else VERI_YOK,
+            "vix": ctx.get("vix", {}).get("close", VERI_YOK),
+            "global_risk_regime": ctx.get("global_risk_regime", VERI_YOK),
+            "bist100_change_5d_pct": ctx.get("bist100", {}).get("change_5d_pct", VERI_YOK),
+            "usdtry_change_5d_pct": ctx.get("usdtry", {}).get("change_5d_pct", VERI_YOK),
+            "rel_strength_5d_pct": ind.get("rel_strength_5d_pct", VERI_YOK),
+            "rel_strength_20d_pct": ind.get("rel_strength_20d_pct", VERI_YOK),
+        }
     raise ValueError(analyst)
 
 

@@ -145,7 +145,7 @@ def test_trade_plan_math():
 def test_cli_end_to_end(monkeypatch, provider, tmp_path, capsys):
     import graph.workflow as wf
     import agents.llm as llm_mod
-    monkeypatch.setattr(llm_mod, "ClaudeLLM", lambda: FakeLLM(Script()))
+    monkeypatch.setattr(llm_mod, "get_llm", lambda: FakeLLM(Script()))
     monkeypatch.setattr(wf, "default_data_provider", provider)
     monkeypatch.setattr(wf.run_analysis, "__defaults__", (provider, None))
     monkeypatch.setenv("DB_PATH", str(tmp_path / "t.db"))
@@ -173,3 +173,29 @@ def test_report_formatting(provider):
     st = run_analysis("TEST.IS", FakeLLM(Script()), data_provider=provider)
     txt = format_report(st)
     assert "KARAR: AL" in txt and "Risk/Ödül" in txt and "yatırım tavsiyesi değildir" in txt
+
+
+def test_llm_fully_down_returns_bekle_without_crash(provider):
+    from agents.llm import LLMError
+
+    def down(schema, system, user):
+        raise LLMError("kota doldu")
+    llm = FakeLLM(down)
+    st = run_analysis("TEST.IS", llm, data_provider=provider)
+    assert st["final"].decision == "BEKLE" and st["final"].confidence == 0.0
+    assert any("LLM devre dışı" in g for g in st["final"].gate_reasons)
+    assert not any(c["schema"] in ("DebateTurn", "RiskJudgement") for c in llm.calls)  # boşuna çağrı yok
+
+
+def test_llm_fails_mid_debate_returns_bekle(provider):
+    from agents.llm import LLMError
+    base = Script()
+
+    def flaky(schema, system, user):
+        if schema is DebateTurn:
+            raise LLMError("503")
+        return base(schema, system, user)
+    llm = FakeLLM(flaky)
+    st = run_analysis("TEST.IS", llm, data_provider=provider)
+    assert st["final"].decision == "BEKLE"
+    assert sum(c["schema"] == "DebateTurn" for c in llm.calls) == 1

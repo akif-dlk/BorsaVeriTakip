@@ -37,20 +37,45 @@ class Settings:
     fast_effort: str = field(default_factory=lambda: os.getenv("FAST_EFFORT", "low"))
     reasoning_effort: str = field(default_factory=lambda: os.getenv("REASONING_EFFORT", "medium"))
 
+    gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
+    gemini_fast_models: list[str] = field(default_factory=lambda: _csv(
+        "GEMINI_FAST_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.6-flash"))
+    gemini_reasoning_models: list[str] = field(default_factory=lambda: _csv(
+        "GEMINI_REASONING_MODELS", "gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash,gemini-2.5-pro,gemini-2.5-flash"))
+    # auto: ANTHROPIC_API_KEY varsa Claude, yoksa Gemini
+    fast_provider: str = field(default_factory=lambda: os.getenv("FAST_PROVIDER", "auto"))
+    reasoning_provider: str = field(default_factory=lambda: os.getenv("REASONING_PROVIDER", "auto"))
+
     telegram_bot_token: str | None = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN"))
     allowed_telegram_user_ids: list[int] = field(default_factory=lambda: _int_list("ALLOWED_TELEGRAM_USER_ID"))
     watchlist: list[str] = field(default_factory=lambda: _csv("WATCHLIST", "THYAO.IS,ASELS.IS,GARAN.IS"))
+    morning_report_enabled: bool = field(default_factory=lambda: os.getenv("MORNING_REPORT_ENABLED", "true").lower() == "true")
     report_hour: int = field(default_factory=lambda: int(os.getenv("REPORT_HOUR", "9")))
     report_minute: int = field(default_factory=lambda: int(os.getenv("REPORT_MINUTE", "30")))
     timezone: str = field(default_factory=lambda: os.getenv("TIMEZONE", "Europe/Istanbul"))
+
+    # ---- Sanal portföy simülasyonu (gerçek para yok) ----
+    universe: list[str] = field(default_factory=lambda: _csv("UNIVERSE", ""))  # boş -> BIST30
+    sim_initial_cash: float = field(default_factory=lambda: float(os.getenv("SIM_INITIAL_CASH", "10000")))
+    sim_days: int = field(default_factory=lambda: int(os.getenv("SIM_DAYS", "14")))  # takvim günü
+    sim_candidates: int = field(default_factory=lambda: int(os.getenv("SIM_CANDIDATES", "3")))  # LLM'e giden aday/gün
+    sim_max_positions: int = field(default_factory=lambda: int(os.getenv("SIM_MAX_POSITIONS", "4")))
+    sim_risk_per_trade_pct: float = field(default_factory=lambda: float(os.getenv("SIM_RISK_PER_TRADE_PCT", "2")))
+    sim_max_position_pct: float = field(default_factory=lambda: float(os.getenv("SIM_MAX_POSITION_PCT", "30")))
+    sim_commission_pct: float = field(default_factory=lambda: float(os.getenv("SIM_COMMISSION_PCT", "0.2")))
+    sim_slippage_pct: float = field(default_factory=lambda: float(os.getenv("SIM_SLIPPAGE_PCT", "0.1")))
+    sim_trade_hour: int = field(default_factory=lambda: int(os.getenv("SIM_TRADE_HOUR", "10")))
+    sim_trade_minute: int = field(default_factory=lambda: int(os.getenv("SIM_TRADE_MINUTE", "30")))
+    sim_eod_hour: int = field(default_factory=lambda: int(os.getenv("SIM_EOD_HOUR", "18")))
+    sim_eod_minute: int = field(default_factory=lambda: int(os.getenv("SIM_EOD_MINUTE", "30")))
 
     db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", str(BASE_DIR / "borsa_ajansi.db")))
 
     # Eşikler ve döngü limitleri
     confidence_threshold: float = 0.70
     max_fact_check_retries: int = 2
-    min_debate_rounds: int = 2
-    max_debate_rounds: int = 3
+    min_debate_rounds: int = field(default_factory=lambda: int(os.getenv("MIN_DEBATE_ROUNDS", "2")))
+    max_debate_rounds: int = field(default_factory=lambda: int(os.getenv("MAX_DEBATE_ROUNDS", "3")))
     price_tolerance_pct: float = 1.0      # fiyat iddiası için % tolerans
     indicator_tolerance: float = 2.0      # RSI vb. için mutlak tolerans
     ratio_tolerance_pct: float = 5.0      # F/K vb. için % tolerans

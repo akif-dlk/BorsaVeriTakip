@@ -17,11 +17,11 @@ def _setup_logging() -> None:
 
 
 def cmd_analiz(ticker: str, save: bool = True) -> int:
-    from agents.llm import ClaudeLLM
+    from agents.llm import get_llm
     from graph.report import format_report
     from graph.workflow import run_analysis
 
-    state = run_analysis(ticker, ClaudeLLM(), progress=lambda m: print(m, flush=True))
+    state = run_analysis(ticker, get_llm(), progress=lambda m: print(m, flush=True))
     print("\n" + format_report(state))
     if save:
         from memory.db import PredictionStore

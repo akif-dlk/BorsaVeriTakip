@@ -87,9 +87,10 @@ def detect_conflict(reports: dict[str, AnalystReport]) -> bool:
     return opposite and min(t.confidence, f.confidence) >= CONFLICT_MIN_CONFIDENCE
 
 
-def build_risk_prompt(ticker, reports, checks, debate, penalties_reasons) -> str:
+def build_risk_prompt(ticker, reports, checks, debate, penalties_reasons, context=None) -> str:
     payload = {
         "ticker": ticker,
+        "market_context": context or VERI_YOK,
         "analyst_reports": [{**r.model_dump(), "fact_check_passed": checks[n].passed if n in checks else False}
                             for n, r in reports.items()],
         "debate": [{"side": v.turn.side, "round": v.turn.round, "thesis": v.turn.thesis,
@@ -103,7 +104,7 @@ def build_risk_prompt(ticker, reports, checks, debate, penalties_reasons) -> str
 def decide(llm: LLM, ticker: str, bundle, reports, checks, debate) -> FinalDecision:
     pen, pen_reasons = confidence_penalties(bundle, reports, checks, debate)
     judgement = llm.with_structured_output(RiskJudgement, tier="reasoning").invoke(
-        prompts.RISK_MANAGER, build_risk_prompt(ticker, reports, checks, debate, pen_reasons))
+        prompts.RISK_MANAGER, build_risk_prompt(ticker, reports, checks, debate, pen_reasons, bundle.get("context")))
     return apply_gates(ticker, bundle, reports, judgement, pen, pen_reasons)
 
 
@@ -136,3 +137,12 @@ def apply_gates(ticker, bundle, reports, j: RiskJudgement, penalty: float, pen_r
         raw_confidence=j.confidence, confidence=conf, winning_side=j.winning_side, rationale=j.rationale,
         key_risks=j.key_risks, gate_reasons=gates, trade_plan=plan, close=close if _is_num(close) else None,
     )
+
+
+def fallback_decision(ticker, bundle, reports, checks, debate, reason: str) -> FinalDecision:
+    """LLM'e erişilemediğinde uydurma karar yerine güvenli varsayılan: BEKLE, güven 0."""
+    j = RiskJudgement(decision="BEKLE", confidence=0.0, winning_side="berabere", technical_fundamental_conflict=False,
+                      rationale=f"Karar üretilemedi: {reason}. Güvenli varsayılan BEKLE.",
+                      key_risks=["Yapay zekâ modeline erişim yok (kota/servis)"])
+    pen, reasons = confidence_penalties(bundle, reports, checks, debate)
+    return apply_gates(ticker, bundle, reports, j, pen, reasons + [f"LLM devre dışı: {reason}"])

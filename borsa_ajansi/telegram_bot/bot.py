@@ -35,6 +35,21 @@ class Services:
     allowed_ids: set[int] = field(default_factory=set)
     watchlist: list[str] = field(default_factory=lambda: list(settings.watchlist))
     semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(MAX_CONCURRENT_ANALYSES))
+    trader: Any = None  # simulation.paper_trader.PaperTrader
+    sim_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def analyze_and_save(self, ticker: str) -> dict:
+        """Senkron: simülasyon döngüsü (thread içinde) için analiz + kayıt."""
+        state = run_analysis(ticker, self.llm_factory(), self.data_provider)
+        self.store.save_prediction(state["final"], state)
+        return state
+
+
+def make_trader(svc: Services, db_path: str | None = None):
+    from simulation.paper_trader import PaperTrader
+    from tools.screener import screen
+
+    return PaperTrader(db_path or svc.store.db_path, analyze_fn=svc.analyze_and_save, screen_fn=screen)
 
 
 def _svc(context: ContextTypes.DEFAULT_TYPE) -> Services:
@@ -87,6 +102,12 @@ HELP = (
     "/analiz <HİSSE> — 3 kademeli tam analiz (ör. /analiz THYAO.IS)\n"
     "/gundem — günün piyasa/KAP özeti\n"
     "/gecmis — son tahminler ve başarı oranı\n"
+    "\n💼 Sanal portföy (gerçek para yok)\n"
+    "/sim_baslat [tutar] [gün] — simülasyonu başlat (varsayılan 10000 TL, 14 gün)\n"
+    "/portfoy — portföy durumu, K/Z ve BIST100 kıyası\n"
+    "/sim_islem — tarama + alım/satım döngüsünü şimdi çalıştır\n"
+    "/sim_log — son simülasyon olayları\n"
+    "/sim_durdur — simülasyonu bitir, pozisyonları kapat\n"
 )
 
 
@@ -219,13 +240,117 @@ async def morning_report(app: Application) -> None:
         await _send_long(app.bot, uid, text)
 
 
+# ---------------- sanal portföy ----------------
+async def run_sim_cycle(app_bot, svc: Services, chat_ids: list[int], full: bool = True) -> None:
+    """full=True: tarama + LLM analiz + emir; False: yalnızca stop/hedef kontrolü + rapor."""
+    if svc.trader is None or not svc.trader.active_run() or svc.sim_lock.locked():
+        return
+    async with svc.sim_lock:
+        try:
+            msgs = await asyncio.to_thread(svc.trader.trade_cycle if full else svc.trader.check_exits)
+            if not full:
+                await asyncio.to_thread(svc.trader.snapshot)
+        except Exception as exc:
+            log.exception("Simülasyon döngüsü hatası")
+            msgs = [f"❌ Simülasyon döngüsü hatası: {exc}"]
+        report = await asyncio.to_thread(svc.trader.report)
+    title = "🤖 İşlem döngüsü" if full else "🌆 Gün sonu kontrolü"
+    body = "\n".join(msgs) if msgs else "Yeni işlem yok."
+    for cid in chat_ids:
+        await _send_long(app_bot, cid, f"{title}\n{body}\n\n{report}")
+
+
+def parse_sim_args(args: list[str]) -> tuple[float, int]:
+    cash, days = settings.sim_initial_cash, settings.sim_days
+    if args:
+        cash = float(args[0].replace(".", "").replace(",", "."))
+    if len(args) > 1:
+        days = int(args[1])
+    if not (1000 <= cash <= 100_000_000) or not (1 <= days <= 365):
+        raise ValueError("tutar 1.000–100.000.000, gün 1–365 olmalı")
+    return cash, days
+
+
+@authorized
+async def cmd_sim_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    svc, msg = _svc(context), update.effective_message
+    try:
+        cash, days = parse_sim_args(context.args or [])
+        run = await asyncio.to_thread(svc.trader.start, cash, days)
+    except (ValueError, RuntimeError) as exc:
+        await msg.reply_text(f"⚠️ {exc}\nKullanım: /sim_baslat 10000 14")
+        return
+    await msg.reply_text(
+        f"💼 Simülasyon #{run['id']} başladı: {cash:,.0f} TL, {days} gün ({run['start_date']} → {run['end_date']}).\n"
+        f"Şimdi ilk tarama ve analiz yapılıyor (birkaç dakika sürebilir)...\n"
+        f"Otomatik: hafta içi {settings.sim_trade_hour:02d}:{settings.sim_trade_minute:02d} işlem döngüsü, "
+        f"{settings.sim_eod_hour:02d}:{settings.sim_eod_minute:02d} gün sonu raporu.")
+    context.application.create_task(run_sim_cycle(context.bot, svc, [msg.chat_id], full=True))
+
+
+@authorized
+async def cmd_portfoy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    svc = _svc(context)
+    await _send_long(context.bot, update.effective_message.chat_id, await asyncio.to_thread(svc.trader.report))
+
+
+@authorized
+async def cmd_sim_islem(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    svc, msg = _svc(context), update.effective_message
+    if not svc.trader.active_run():
+        await msg.reply_text("Aktif simülasyon yok. /sim_baslat ile başlat.")
+        return
+    if svc.sim_lock.locked():
+        await msg.reply_text("Bir işlem döngüsü zaten çalışıyor, bitince rapor gelecek.")
+        return
+    await msg.reply_text("⏳ Tarama ve analiz başladı, sonuç birkaç dakika içinde gelecek...")
+    context.application.create_task(run_sim_cycle(context.bot, svc, [msg.chat_id], full=True))
+
+
+@authorized
+async def cmd_sim_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    svc = _svc(context)
+    events = await asyncio.to_thread(svc.trader.recent_events, 20)
+    await _send_long(context.bot, update.effective_message.chat_id,
+                     "🧾 Son olaylar\n" + ("\n".join(events) if events else "Kayıt yok."))
+
+
+@authorized
+async def cmd_sim_durdur(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    svc = _svc(context)
+    async with svc.sim_lock:
+        run = await asyncio.to_thread(svc.trader.stop)
+    if not run:
+        await update.effective_message.reply_text("Aktif simülasyon yok.")
+        return
+    await _send_long(context.bot, update.effective_message.chat_id,
+                     "⏹️ Simülasyon durduruldu.\n\n" + await asyncio.to_thread(svc.trader.report, run["id"]))
+
+
+async def sim_trade_job(app: Application) -> None:
+    svc: Services = app.bot_data["services"]
+    await run_sim_cycle(app.bot, svc, list(svc.allowed_ids), full=True)
+
+
+async def sim_eod_job(app: Application) -> None:
+    svc: Services = app.bot_data["services"]
+    await run_sim_cycle(app.bot, svc, list(svc.allowed_ids), full=False)
+
+
 def setup_scheduler(app: Application):
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
     sched = AsyncIOScheduler(timezone=ZoneInfo(settings.timezone))
-    sched.add_job(morning_report, "cron", day_of_week="mon-fri", hour=settings.report_hour,
-                  minute=settings.report_minute, args=[app], id="morning_report", max_instances=1,
+    if settings.morning_report_enabled:
+        sched.add_job(morning_report, "cron", day_of_week="mon-fri", hour=settings.report_hour,
+                      minute=settings.report_minute, args=[app], id="morning_report", max_instances=1,
+                      coalesce=True, misfire_grace_time=1800)
+    sched.add_job(sim_trade_job, "cron", day_of_week="mon-fri", hour=settings.sim_trade_hour,
+                  minute=settings.sim_trade_minute, args=[app], id="sim_trade", max_instances=1,
                   coalesce=True, misfire_grace_time=1800)
+    sched.add_job(sim_eod_job, "cron", day_of_week="mon-fri", hour=settings.sim_eod_hour,
+                  minute=settings.sim_eod_minute, args=[app], id="sim_eod", max_instances=1,
+                  coalesce=True, misfire_grace_time=3600)
     sched.start()
     return sched
 
@@ -233,9 +358,25 @@ def setup_scheduler(app: Application):
 # ---------------- uygulama ----------------
 def build_application(services: Services, token: str) -> Application:
     async def _post_init(app: Application) -> None:
-        app.bot_data["scheduler"] = setup_scheduler(app)
-        log.info("Zamanlayıcı kuruldu: hafta içi %02d:%02d (%s)", settings.report_hour, settings.report_minute,
-                 settings.timezone)
+        sched = setup_scheduler(app)
+        app.bot_data["scheduler"] = sched
+        for job in sched.get_jobs():
+            log.info("Zamanlanmış görev: %s -> sonraki çalışma %s", job.id, job.next_run_time)
+        try:
+            from telegram import BotCommand
+            await app.bot.set_my_commands([
+                BotCommand("analiz", "Hisse analizi: /analiz THYAO"),
+                BotCommand("gundem", "Günün piyasa özeti"),
+                BotCommand("gecmis", "Son tahminler ve başarı oranı"),
+                BotCommand("sim_baslat", "Sanal portföy başlat: /sim_baslat 10000 14"),
+                BotCommand("portfoy", "Sanal portföy durumu"),
+                BotCommand("sim_islem", "Tarama + işlem döngüsünü şimdi çalıştır"),
+                BotCommand("sim_log", "Son simülasyon olayları"),
+                BotCommand("sim_durdur", "Simülasyonu bitir"),
+                BotCommand("yardim", "Komut listesi"),
+            ])
+        except Exception as exc:  # menü kaydı kritik değil
+            log.warning("Komut menüsü kaydedilemedi: %s", exc)
 
     async def _post_shutdown(app: Application) -> None:
         sched = app.bot_data.get("scheduler")
@@ -249,18 +390,24 @@ def build_application(services: Services, token: str) -> Application:
     app.add_handler(CommandHandler("analiz", cmd_analiz))
     app.add_handler(CommandHandler("gundem", cmd_gundem))
     app.add_handler(CommandHandler("gecmis", cmd_gecmis))
+    app.add_handler(CommandHandler("sim_baslat", cmd_sim_baslat))
+    app.add_handler(CommandHandler(["portfoy", "sim_rapor"], cmd_portfoy))
+    app.add_handler(CommandHandler("sim_islem", cmd_sim_islem))
+    app.add_handler(CommandHandler("sim_log", cmd_sim_log))
+    app.add_handler(CommandHandler("sim_durdur", cmd_sim_durdur))
     return app
 
 
 def run_bot() -> None:
-    from agents.llm import ClaudeLLM
+    from agents.llm import get_llm
 
     if not settings.telegram_bot_token:
         raise SystemExit("TELEGRAM_BOT_TOKEN .env içinde tanımlı değil")
     if not settings.allowed_telegram_user_ids:
         log.warning("ALLOWED_TELEGRAM_USER_ID boş: bot TÜM mesajları sessizce reddedecek")
-    services = Services(llm_factory=ClaudeLLM, store=PredictionStore(),
+    services = Services(llm_factory=get_llm, store=PredictionStore(),
                         allowed_ids=set(settings.allowed_telegram_user_ids))
+    services.trader = make_trader(services)
     app = build_application(services, settings.telegram_bot_token)
     log.info("Bot başlatılıyor...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)

@@ -98,3 +98,10 @@ def test_live_snapshot():
     snap = market_data.get_market_snapshot("THYAO.IS")
     assert snap["indicators"]["status"] == "ok"
     assert isinstance(snap["indicators"]["rsi14"], float)
+
+
+def test_fundamentals_sanity_filter():
+    info = {"trailingPE": 5.0, "priceToBook": 19.05, "enterpriseToEbitda": 222.5}
+    f = fundamental_data.get_fundamentals("THYAO", info_fetcher=lambda t: info, mcp_fetcher=lambda t: {})
+    assert f["pb_ratio"] == VERI_YOK and f["ev_ebitda"] == VERI_YOK and f["pe_ratio"] == 5.0
+    assert len(f["suspicious_values_removed"]) == 2

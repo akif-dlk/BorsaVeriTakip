@@ -14,7 +14,7 @@ from langgraph.graph import END, START, StateGraph
 from agents import analysts as analysts_mod
 from agents import debate as debate_mod
 from agents import risk_manager
-from agents.llm import LLM
+from agents.llm import LLM, LLMError
 from config.settings import settings
 from tools import fundamental_data, market_data, news_sentiment
 from verification import fact_checker
@@ -34,13 +34,21 @@ class AnalysisState(TypedDict, total=False):
     feedback: dict[str, list[str]]
     debate: list[ValidatedTurn]
     round: int
+    llm_down: bool
     final: FinalDecision
 
 
 def default_data_provider(ticker: str) -> dict[str, Any]:
+    from tools.market_context import get_global_context, relative_strength
+
+    market = market_data.get_market_snapshot(ticker)
+    ctx = get_global_context()
+    if market["indicators"].get("status") == "ok":
+        market["indicators"].update(relative_strength(market["indicators"], ctx))
     return {
         "ticker": ticker,
-        "market": market_data.get_market_snapshot(ticker),
+        "context": ctx,
+        "market": market,
         "fundamentals": fundamental_data.get_fundamentals(ticker),
         "news": news_sentiment.get_company_news(ticker),
         "macro": news_sentiment.get_macro_news(),
@@ -55,7 +63,7 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
         say("📥 Veriler çekiliyor (fiyat, teknik, temel, haber)...")
         bundle = data_provider(state["ticker"])
         return {"bundle": bundle, "reports": {}, "checks": {}, "attempts": {}, "feedback": {},
-                "pending": list(analysts_mod.ANALYSTS), "debate": [], "round": 0}
+                "pending": list(analysts_mod.ANALYSTS), "debate": [], "round": 0, "llm_down": False}
 
     def run_analysts(state: AnalysisState) -> AnalysisState:
         pending = state["pending"]
@@ -78,17 +86,28 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
             if not res.passed and state["attempts"][n] <= settings.max_fact_check_retries:
                 feedback[n] = res.errors
                 still.append(n)
+        all_failed = all(any(g.startswith("analist_calismadi") for g in r.data_gaps) for r in state["reports"].values())
+        if all_failed:
+            say("⚠️ Hiçbir analist çalışamadı (LLM erişimi yok) — güvenli varsayılan: BEKLE")
+            return {"checks": checks, "pending": [], "feedback": {}, "llm_down": True}
         return {"checks": checks, "pending": still, "feedback": feedback}
 
     def after_fact_check(state: AnalysisState) -> str:
+        if state.get("llm_down"):
+            return "risk"
         return "analysts" if state["pending"] else "bull"
 
     def _turn(side: str, state: AnalysisState) -> AnalysisState:
         rnd = state["round"] + (1 if side == "boga" else 0)
         if side == "boga":
             say(f"🐂🐻 2. Kademe: Boğa/Ayı tartışması — tur {rnd}...")
-        v = debate_mod.run_turn(llm, side, rnd, state["ticker"], state["bundle"], state["reports"],
-                                state["checks"], state["debate"])
+        try:
+            v = debate_mod.run_turn(llm, side, rnd, state["ticker"], state["bundle"], state["reports"],
+                                    state["checks"], state["debate"])
+        except LLMError as exc:
+            log.error("Tartışma turu başarısız (%s): %s", side, exc)
+            say(f"⚠️ {side} ajanı LLM'e erişemedi, tartışma kesildi")
+            return {"round": rnd, "llm_down": True}
         return {"debate": state["debate"] + [v], "round": rnd}
 
     def bull(state: AnalysisState) -> AnalysisState:
@@ -97,7 +116,12 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
     def bear(state: AnalysisState) -> AnalysisState:
         return _turn("ayi", state)
 
+    def after_bull(state: AnalysisState) -> str:
+        return "risk" if state.get("llm_down") else "bear"
+
     def after_bear(state: AnalysisState) -> str:
+        if state.get("llm_down"):
+            return "risk"
         r = state["round"]
         if r < settings.min_debate_rounds:
             return "bull"
@@ -107,9 +131,14 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
 
     def risk(state: AnalysisState) -> AnalysisState:
         say("⚖️ 3. Kademe: Risk Yöneticisi karar veriyor...")
-        final = risk_manager.decide(llm, state["ticker"], state["bundle"], state["reports"],
-                                    state["checks"], state["debate"])
-        return {"final": final}
+        args = (state["ticker"], state["bundle"], state["reports"], state["checks"], state["debate"])
+        if state.get("llm_down"):
+            return {"final": risk_manager.fallback_decision(*args, reason="LLM erişimi kesildi")}
+        try:
+            return {"final": risk_manager.decide(llm, *args)}
+        except LLMError as exc:
+            log.error("Risk Yöneticisi başarısız: %s", exc)
+            return {"final": risk_manager.fallback_decision(*args, reason=f"Risk Yöneticisi LLM hatası: {exc}")}
 
     g = StateGraph(AnalysisState)
     g.add_node("fetch_data", fetch_data)
@@ -121,8 +150,8 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
     g.add_edge(START, "fetch_data")
     g.add_edge("fetch_data", "analysts")
     g.add_edge("analysts", "fact_check")
-    g.add_conditional_edges("fact_check", after_fact_check, {"analysts": "analysts", "bull": "bull"})
-    g.add_edge("bull", "bear")
+    g.add_conditional_edges("fact_check", after_fact_check, {"analysts": "analysts", "bull": "bull", "risk": "risk"})
+    g.add_conditional_edges("bull", after_bull, {"bear": "bear", "risk": "risk"})
     g.add_conditional_edges("bear", after_bear, {"bull": "bull", "risk": "risk"})
     g.add_edge("risk", END)
     return g.compile()
