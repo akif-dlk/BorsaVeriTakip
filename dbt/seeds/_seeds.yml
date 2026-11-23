@@ -1,0 +1,28 @@
+version: 2
+
+seeds:
+  - name: instrument_metadata
+    description: >
+      İzlenen enstrümanların elle tutulan tanımları (ad, sektör, kaynak sembolü). src/bvt/config.py'deki
+      enstrüman listesiyle aynı tutulur (tests/test_dbt_project.py kontrol eder). dim_instrument'in kaynağıdır.
+    config:
+      column_types:
+        instrument_code: text
+        instrument_name: text
+        asset_class: text
+        currency: text
+        sector: text
+        source_ticker: text
+    columns:
+      - name: instrument_code
+        data_tests: [not_null, unique]
+      - name: instrument_name
+        data_tests: [not_null]
+      - name: asset_class
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['fx', 'stock', 'index', 'gold']}
+      - name: currency
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['TRY', 'USD']}

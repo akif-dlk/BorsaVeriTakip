@@ -66,6 +66,14 @@ flowchart LR
   taşır (ortak fiyat sözleşmesi); `fact_daily_prices` (Gün 9) bunları birleştirir. Dönüşümler: kod büyük harf,
   tip/ölçek sabitleme, `asset_class` (fx / stock / index / gold), `adj_close` (yoksa `close`), endeks hacminde
   0 → NULL, `is_primary_source` (döviz için yfinance; EVDS karşılaştırma kaynağı), `has_valid_ohlc` bayrağı.
+- **Marts / star schema (tablo):** `fact_daily_prices` (tanecik: enstrüman × işlem günü, yalnızca birincil
+  kaynak, tek satır) → `dim_instrument` ve `dim_date`. Vekil anahtarlar kararlıdır: `instrument_key =
+  md5(instrument_code)` (`surrogate_key` makrosu), `date_key = YYYYMMDD`; tablolar her build'de baştan kurulsa da
+  bağlar değişmez. `dim_instrument` = `instrument_metadata` seed'i (ad, sektör, kaynak sembolü; `staging`
+  şemasına yüklenir) + gözlenen kapsam (ilk/son gün, gün sayısı); seed'de olmayan yeni sembol `is_configured=false`
+  ile görünür (uyarı testi). `dim_date` ilk fiyat gününden bugüne kesintisiz takvimdir; tatiller veriden çıkarılır
+  (`is_bist_holiday`: hafta içi, son BIST gününden eski ve BIST verisi yok), `has_fx/bist/gold_data` bayrakları
+  serilerin takvime hizalanmasında (Gün 10-11) kullanılır.
 - **Testler:** not_null, accepted_values ve bağımlılıksız `unique_combination_of_columns` generic testi
   (doğal anahtar). `dbt deps` gerekmez; ağsız ortamda da çalışır.
 - **Çalıştırma:** dbt ayrı sanal ortamda (`/opt/dbt-venv`, `requirements-dbt.txt`); `bvt.dbt_runner` alt süreç
@@ -83,7 +91,9 @@ flowchart LR
   `BVT_LOOKBACK_DAYS` gün (idempotent yeniden çekim). Görev özeti (kaynak, pencere, satır sayısı) XCom'a,
   ayrıntılı sayımlar `ops.pipeline_runs`'a yazılır.
 - **dbt:** `dbt_build_staging` görevi üç çekimden sonra (`trigger_rule=all_done`) `dbt build --select
-  source:raw staging` çalıştırır; test başarısızsa görev düşer, yeniden denenmez (`retries=0`).
+  source:raw staging` çalıştırır; test başarısızsa görev düşer, yeniden denenmez (`retries=0`). Ardından
+  `dbt_build_marts` (`all_success`: staging testi düşerse hatalı veri marts'a taşınmaz) `dbt build --select
+  instrument_metadata marts` ile seed'i ve star schema tablolarını kurup test eder.
 - **Boşluk kontrolü:** `check_gaps` görevi üç çekimden sonra (`trigger_rule=all_done`, biri düşse de) çalışır,
   son `BVT_GAP_CHECK_DAYS` günü `bvt.gaps` ile sınıflandırıp `ops.data_gaps`'e yazar; görevi düşürmez.
 - **Retry:** istek düzeyinde `bvt.retry` (üstel bekleme, yalnızca geçici hatalar, hız sınırında ≥30 sn), görev

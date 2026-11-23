@@ -112,3 +112,17 @@ def test_main_returns_1_on_failure(monkeypatch):
     monkeypatch.setattr(dbt_runner, "run_dbt", boom)
     monkeypatch.setattr("bvt.logging_setup.setup_logging", lambda *a, **k: None)
     assert dbt_runner.main(["build"]) == 1
+
+
+def test_build_marts_selects_seed_and_marts(monkeypatch):
+    seen = {}
+
+    def fake_run(args, timeout=None):
+        seen.update(args=args, timeout=timeout)
+        return [DONE_LINE]
+
+    monkeypatch.setattr(dbt_runner, "run_dbt", fake_run)
+    result = dbt_runner.build_marts()
+    assert seen["args"] == ["build", "--select", "instrument_metadata", "marts"]
+    assert seen["timeout"] == dbt_runner.BUILD_TIMEOUT_S
+    assert result["select"] == "instrument_metadata marts" and result["total"] == 59

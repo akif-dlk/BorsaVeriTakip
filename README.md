@@ -102,7 +102,7 @@ PYTHONPATH=src python -m bvt.backfill --repair-gaps --days 90               # ge
 BVT_LOG_FORMAT=json PYTHONPATH=src python -m bvt.pipeline --source fx       # JSON log
 ```
 
-## dbt: staging katmanı
+## dbt: staging ve star schema
 
 dbt projesi `dbt/` altındadır. `raw.*` tabloları kaynak (`source('raw', ...)`) olarak tanımlıdır; üç staging
 görünümü (`staging.stg_fx_rates`, `stg_stock_prices`, `stg_gold_prices`) bunları **ortak bir fiyat sözleşmesine**
@@ -111,15 +111,31 @@ is_primary_source, has_valid_ohlc, loaded_at`. Satırlar elenmez; OHLC tutarsız
 bayraklanır. Kaynak ve modeller için not-null, kabul edilen değer ve doğal anahtar tekilliği testleri vardır;
 raw tablolarda `fetched_at` üzerinden tazelik (freshness) eşiği tanımlıdır.
 
+Üzerinde `marts` şemasında bir **star schema** kuruludur: `fact_daily_prices` (enstrüman × işlem günü, birincil
+kaynak) → `dim_instrument` (seed `dbt/seeds/instrument_metadata.csv` + veri kapsamı) ve `dim_date` (kesintisiz
+takvim, veriden çıkarılan BIST tatilleri). Anahtarlar kararlıdır (`md5(instrument_code)`, `YYYYMMDD`); olgu
+tanecik tekilliği ve boyutlara referans bütünlüğü (relationships) test edilir.
+
+```sql
+select d.year, d.month, i.instrument_name, avg(f.adj_close) as ortalama
+from marts.fact_daily_prices f
+join marts.dim_instrument i using (instrument_key)
+join marts.dim_date d using (date_key)
+where i.asset_class = 'stock'
+group by 1, 2, 3 order by 1, 2, 3;
+```
+
 dbt, Airflow ile bağımlılık çakışması olmasın diye **ayrı bir sanal ortama** kurulur (imajda `/opt/dbt-venv`).
 `bvt.dbt_runner` dbt'yi `.env` yüklenmiş olarak ve proje/profil dizinini vererek çağırır. Günlük DAG'de
-`dbt_build_staging` görevi üç çekimden sonra çalışır (`dbt build --select source:raw staging`).
+`dbt_build_staging` görevi üç çekimden sonra çalışır (`dbt build --select source:raw staging`), başarılı
+olursa `dbt_build_marts` star schema'yı kurar (`dbt build --select instrument_metadata marts`).
 
 ```bash
 python -m venv .venv-dbt && .venv-dbt/bin/pip install -r requirements-dbt.txt   # Windows: .venv-dbt\Scripts\pip
 export DBT_BIN=.venv-dbt/bin/dbt                                                 # PATH'te dbt varsa gerekmez
 PYTHONPATH=src python -m bvt.dbt_runner debug                                    # bağlantı kontrolü
 PYTHONPATH=src python -m bvt.dbt_runner build --select source:raw staging        # görünümler + testler
+PYTHONPATH=src python -m bvt.dbt_runner build --select instrument_metadata marts  # seed + dim_*/fact_*
 PYTHONPATH=src python -m bvt.dbt_runner source freshness                         # raw tazelik raporu
 docker compose exec airflow-scheduler python -m bvt.dbt_runner build             # konteyner içinde
 ```
@@ -135,7 +151,7 @@ docker compose exec airflow-scheduler python -m bvt.dbt_runner build            
 ```
 ├── docker-compose.yml   # servisler: PostgreSQL, Airflow (webserver, scheduler, init, metadata DB)
 ├── airflow/             # Dockerfile (Airflow + proje bağımlılıkları + ayrı dbt ortamı), dags/
-├── dbt/                 # dbt projesi: models/staging (stg_*), makrolar, generic testler, profiles.yml
+├── dbt/                 # dbt projesi: models/staging (stg_*), models/marts (dim_*, fact_*), seeds, makrolar, testler
 ├── sql/init/            # ilk açılışta çalışan şema betikleri
 ├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry, dbt_runner
 ├── docs/                # mimari, kaynaklar, yol haritası

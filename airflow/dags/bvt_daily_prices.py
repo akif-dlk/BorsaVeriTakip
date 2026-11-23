@@ -9,7 +9,8 @@ Döviz (USD/TRY, EUR/TRY), BIST (8 hisse + XU100) ve altını (ons + gram) her i
 - **Görevler:** `fetch_fx`, `fetch_stocks`, `fetch_gold` birbirinden bağımsızdır ve paralel çalışır; biri
   başarısız olursa diğerleri yine yüklenir. Her görev `ops.pipeline_runs`'a `run_trigger='airflow'` ile kayıt düşer.
   Ardından `check_gaps` (çekimler başarısız olsa da çalışır) son 30 günün boşluk raporunu `ops.data_gaps`'e yazar.
-  Paralelinde `dbt_build_staging` raw kaynak testlerini ve `staging.stg_*` görünümlerini (dbt) kurar/test eder.
+  Paralelinde `dbt_build_staging` raw kaynak testlerini ve `staging.stg_*` görünümlerini (dbt) kurar/test eder;
+  başarılı olursa `dbt_build_marts` star schema'yı (`marts.dim_instrument`, `dim_date`, `fact_daily_prices`) kurar.
 - **Retry:** iki katman. Çekici içinde HTTP isteği üstel bekleme ile 4 kez denenir (hız sınırında en az 30 sn);
   o da tükenirse Airflow görevi 5, 10 dk... (üst sınır 30 dk) arayla 2 kez daha dener.
 - İş mantığı `bvt.pipeline` / `bvt.fetch_*` modüllerindedir; bu dosya yalnızca orkestrasyonu tanımlar.
@@ -48,6 +49,13 @@ def dbt_build_staging(**_context) -> dict:
     from bvt.dbt_runner import build_staging
 
     return build_staging()
+
+
+def dbt_build_marts(**_context) -> dict:
+    """Star schema (seed + dim_* + fact_*) tabloları ve testleri (dbt build). Özet XCom'a döner."""
+    from bvt.dbt_runner import build_marts
+
+    return build_marts()
 
 
 default_args = {
@@ -91,5 +99,11 @@ with DAG(
         trigger_rule=TriggerRule.ALL_DONE,
         retries=0,  # dbt hataları (test/derleme) deterministiktir; yeniden denemek düzeltmez
     )
+    marts = PythonOperator(
+        task_id="dbt_build_marts",
+        python_callable=dbt_build_marts,
+        # Varsayılan all_success: staging testi düşerse hatalı veri marts tablolarına taşınmaz.
+        retries=0,
+    )
     fetch_tasks >> gap_check
-    fetch_tasks >> staging
+    fetch_tasks >> staging >> marts

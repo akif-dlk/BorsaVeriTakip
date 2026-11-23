@@ -44,6 +44,10 @@ class FakePythonOperator:
         self.upstream.extend(other if isinstance(other, list) else [other])
         return self
 
+    def __rshift__(self, other):  # self >> b (zincir: [a] >> self >> b)
+        other.upstream.append(self)
+        return other
+
 
 @pytest.fixture
 def dag_module(monkeypatch):
@@ -128,3 +132,18 @@ def test_dbt_staging_callable(dag_module, monkeypatch):
     monkeypatch.setattr(dbt_runner, "build_staging", lambda: {"pass": 3})
     task = next(t for t in dag_module.dag.tasks if t.task_id == "dbt_build_staging")
     assert task.python_callable(ti=object(), ds="2026-11-18") == {"pass": 3}
+
+
+def test_dbt_marts_runs_only_after_successful_staging(dag_module):
+    task = next(t for t in dag_module.dag.tasks if t.task_id == "dbt_build_marts")
+    assert [t.task_id for t in task.upstream] == ["dbt_build_staging"]
+    assert "trigger_rule" not in task.kwargs  # all_success: staging testi düşerse marts kurulmaz
+    assert task.kwargs["retries"] == 0
+
+
+def test_dbt_marts_callable(dag_module, monkeypatch):
+    from bvt import dbt_runner
+
+    monkeypatch.setattr(dbt_runner, "build_marts", lambda: {"pass": 60})
+    task = next(t for t in dag_module.dag.tasks if t.task_id == "dbt_build_marts")
+    assert task.python_callable(ti=object(), ds="2026-11-18") == {"pass": 60}

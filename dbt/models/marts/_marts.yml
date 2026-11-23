@@ -1,0 +1,158 @@
+version: 2
+
+# Star schema: fact_daily_prices (enstrüman × gün) → dim_instrument, dim_date.
+# Vekil anahtarlar kararlıdır (instrument_key = md5(instrument_code), date_key = YYYYMMDD); tablolar her build'de
+# yeniden kurulsa da bağlar değişmez.
+
+models:
+  - name: dim_instrument
+    description: Enstrüman boyutu; seed tanımları (ad, sektör, kaynak sembolü) + gözlenen veri kapsamı.
+    columns:
+      - name: instrument_key
+        description: Vekil anahtar, md5(instrument_code).
+        data_tests: [not_null, unique]
+      - name: instrument_code
+        description: Doğal anahtar (staging'deki instrument_code).
+        data_tests: [not_null, unique]
+      - name: instrument_name
+        description: Görünen ad (seed); seed'de tanımı olmayan yeni sembolde NULL.
+      - name: asset_class
+        description: Varlık sınıfı.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['fx', 'stock', 'index', 'gold']}
+      - name: currency
+        description: Fiyatın para birimi.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['TRY', 'USD']}
+      - name: sector
+        description: BIST hisseleri için sektör; diğerlerinde NULL.
+      - name: source_ticker
+        description: Kaynaktaki sembol (yfinance) veya türetme formülü.
+      - name: first_price_date
+        description: Birincil kaynaktaki ilk fiyat günü (veri yoksa NULL).
+      - name: last_price_date
+        description: Birincil kaynaktaki son fiyat günü (veri yoksa NULL).
+      - name: n_price_days
+        description: Birincil kaynaktaki fiyat günü sayısı.
+        data_tests: [not_null]
+      - name: is_configured
+        description: Enstrüman seed'de tanımlı mı (false ise seed güncellenmeli).
+        data_tests:
+          - not_null
+          - accepted_values: {values: [true], quote: false, config: {severity: warn}}
+
+  - name: dim_date
+    description: >
+      İlk fiyat gününden bugüne kesintisiz takvim. Tatiller veriden çıkarılır: hafta içi olup BIST verisi
+      olmayan ve son BIST gününden eski gün is_bist_holiday.
+    columns:
+      - name: date_key
+        description: YYYYMMDD tamsayısı.
+        data_tests: [not_null, unique]
+      - name: date_day
+        description: Takvim günü.
+        data_tests: [not_null, unique]
+      - name: year
+        data_tests: [not_null]
+      - name: quarter
+        data_tests:
+          - not_null
+          - accepted_values: {values: [1, 2, 3, 4], quote: false}
+      - name: month
+        data_tests:
+          - not_null
+          - accepted_values: {values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], quote: false}
+      - name: month_name_tr
+        data_tests: [not_null]
+      - name: day_of_month
+        data_tests: [not_null]
+      - name: iso_day_of_week
+        description: 1 = Pazartesi ... 7 = Pazar.
+        data_tests:
+          - not_null
+          - accepted_values: {values: [1, 2, 3, 4, 5, 6, 7], quote: false}
+      - name: day_name_tr
+        data_tests: [not_null]
+      - name: iso_year
+        data_tests: [not_null]
+      - name: iso_week
+        data_tests: [not_null]
+      - name: week_start_date
+        description: Haftanın pazartesisi (haftalık özetler için).
+        data_tests: [not_null]
+      - name: month_start_date
+        description: Ayın ilk günü (aylık özetler için).
+        data_tests: [not_null]
+      - name: is_weekend
+        data_tests: [not_null]
+      - name: has_fx_data
+        description: O gün birincil kaynaktan döviz verisi var mı.
+        data_tests: [not_null]
+      - name: has_bist_data
+        description: O gün en az bir BIST enstrümanında veri var mı.
+        data_tests: [not_null]
+      - name: has_gold_data
+        description: O gün ons altın verisi var mı.
+        data_tests: [not_null]
+      - name: is_bist_trading_day
+        description: BIST işlem günü (veri var).
+        data_tests: [not_null]
+      - name: is_bist_holiday
+        description: Hafta içi, son BIST gününden eski ve BIST verisi yok → resmi tatil / kapalı gün.
+        data_tests: [not_null]
+
+  - name: fact_daily_prices
+    description: Günlük fiyat olgusu; tanecik enstrüman × işlem günü (birincil kaynak, tek satır).
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [instrument_key, date_key]
+    columns:
+      - name: instrument_key
+        description: dim_instrument'e yabancı anahtar.
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_instrument'), field: instrument_key}
+      - name: date_key
+        description: dim_date'e yabancı anahtar.
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_date'), field: date_key}
+      - name: instrument_code
+        description: Okunabilirlik için taşınan doğal anahtar.
+        data_tests: [not_null]
+      - name: price_date
+        description: İşlem günü.
+        data_tests: [not_null]
+      - name: asset_class
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['fx', 'stock', 'index', 'gold']}
+      - name: currency
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['TRY', 'USD']}
+      - name: source
+        description: Satırın geldiği birincil kaynak.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['yfinance', 'derived']}
+      - name: open
+        description: Açılış (EVDS gibi yalnızca kapanış veren kaynaklarda NULL olabilir).
+      - name: high
+        description: Gün içi en yüksek.
+      - name: low
+        description: Gün içi en düşük.
+      - name: close
+        description: Kapanış fiyatı.
+        data_tests: [not_null]
+      - name: volume
+        description: İşlem hacmi (hisseler); döviz, altın ve endekste NULL.
+      - name: adj_close
+        description: Getiri ve göstergelerde kullanılacak düzeltilmiş kapanış.
+        data_tests: [not_null]
+      - name: has_valid_ohlc
+        data_tests: [not_null]
+      - name: loaded_at
+        data_tests: [not_null]

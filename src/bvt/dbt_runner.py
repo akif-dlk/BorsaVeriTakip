@@ -13,6 +13,7 @@ yalnızca standart kütüphaneyi kullanır, hangi ortamda kurulu olduğuna bakma
 Kullanım:
     python -m bvt.dbt_runner debug                              # bağlantı kontrolü
     python -m bvt.dbt_runner build --select source:raw staging  # staging görünümleri + testleri
+    python -m bvt.dbt_runner build --select instrument_metadata marts  # star schema (dim_*, fact_*) + testleri
     python -m bvt.dbt_runner                                    # varsayılan: staging build
 """
 from __future__ import annotations
@@ -31,6 +32,9 @@ log = logging.getLogger("bvt.dbt_runner")
 DEFAULT_DBT_DIR = Path(__file__).resolve().parents[2] / "dbt"
 # Staging katmanı: raw kaynak testleri + stg_* görünümleri ve testleri
 STAGING_SELECT = ("source:raw", "staging")
+# Marts katmanı: enstrüman tanımları (seed) + star schema (dim_instrument, dim_date, fact_daily_prices) ve testleri.
+# Staging'e bağımlıdır ama onu yeniden kurmaz; günlük DAG'de staging görevinden sonra çalışır.
+MARTS_SELECT = ("instrument_metadata", "marts")
 TAIL_LINES = 30
 # Airflow görevinin execution_timeout'u (30 dk) dolmadan dbt kendi hatasıyla düşsün
 BUILD_TIMEOUT_S = 20 * 60
@@ -135,6 +139,12 @@ def build_staging() -> dict:
     """Airflow görevinin çağırdığı fonksiyon: raw kaynak testleri + staging görünümleri. Özet XCom'a yazılır."""
     lines = run_dbt(["build", "--select", *STAGING_SELECT], timeout=BUILD_TIMEOUT_S)
     return {"select": " ".join(STAGING_SELECT), **summarize(lines)}
+
+
+def build_marts() -> dict:
+    """Airflow görevinin çağırdığı fonksiyon: seed + star schema tabloları ve testleri. Özet XCom'a yazılır."""
+    lines = run_dbt(["build", "--select", *MARTS_SELECT], timeout=BUILD_TIMEOUT_S)
+    return {"select": " ".join(MARTS_SELECT), **summarize(lines)}
 
 
 def main(argv: list[str] | None = None) -> int:

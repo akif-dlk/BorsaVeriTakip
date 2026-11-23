@@ -5,6 +5,7 @@ config-version: 2
 profile: bvt
 
 model-paths: ["models"]
+seed-paths: ["seeds"]
 macro-paths: ["macros"]
 test-paths: ["tests"]
 target-path: target
@@ -23,3 +24,15 @@ models:
       +materialized: view
       +docs:
         node_color: "#4a90d9"
+    marts:
+      # Tablo: gösterge/korelasyon sorguları ve API için hızlı okuma; her build'de baştan kurulur (veri küçük).
+      +schema: marts
+      +materialized: table
+      +docs:
+        node_color: "#2e8b57"
+
+seeds:
+  bvt:
+    # Elle tutulan referans verisi (enstrüman tanımları) → staging.instrument_metadata
+    +schema: staging
+    +quote_columns: false

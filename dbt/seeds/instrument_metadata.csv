@@ -1,0 +1,14 @@
+instrument_code,instrument_name,asset_class,currency,sector,source_ticker
+USDTRY,ABD Doları / Türk Lirası,fx,TRY,,USDTRY=X
+EURTRY,Euro / Türk Lirası,fx,TRY,,EURTRY=X
+XU100,BIST 100 Endeksi,index,TRY,,XU100.IS
+THYAO,Türk Hava Yolları,stock,TRY,Ulaştırma,THYAO.IS
+GARAN,Garanti BBVA,stock,TRY,Bankacılık,GARAN.IS
+ASELS,Aselsan,stock,TRY,Savunma,ASELS.IS
+BIMAS,BİM Birleşik Mağazalar,stock,TRY,Perakende,BIMAS.IS
+KCHOL,Koç Holding,stock,TRY,Holding,KCHOL.IS
+SISE,Şişecam,stock,TRY,Cam ve Kimya,SISE.IS
+TUPRS,Tüpraş,stock,TRY,Enerji,TUPRS.IS
+AKBNK,Akbank,stock,TRY,Bankacılık,AKBNK.IS
+XAUUSD_OZ,Ons Altın (USD),gold,USD,,GC=F
+XAUTRY_GRAM,Gram Altın (TRY),gold,TRY,,derived: GC=F * USDTRY / 31.1034768
