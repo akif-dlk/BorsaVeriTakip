@@ -8,6 +8,7 @@ os.environ.update({
     "SIM_RISK_PER_TRADE_PCT": "2", "SIM_MAX_POSITION_PCT": "30", "SIM_COMMISSION_PCT": "0.2",
     "SIM_SLIPPAGE_PCT": "0.1", "SIM_TRADE_HOUR": "10", "SIM_TRADE_MINUTE": "30", "SIM_EOD_HOUR": "18",
     "SIM_EOD_MINUTE": "30", "UNIVERSE": "", "REPORT_HOUR": "9", "REPORT_MINUTE": "30",
+    "DOCUMENTS_ENABLED": "false",
 })
 
 import numpy as np

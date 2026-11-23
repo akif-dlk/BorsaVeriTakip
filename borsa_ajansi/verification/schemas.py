@@ -106,3 +106,29 @@ class FinalDecision(_Strict):
     gate_reasons: list[str] = []  # BEKLE'ye çekilme / güven düşürme gerekçeleri
     trade_plan: TradePlan | None = None
     close: float | None = None
+
+
+# ---------- Belge okuma: KAP bildirimleri ve faaliyet raporu / yatırımcı sunumu (LLM, hızlı model) ----------
+class DisclosureNote(_Strict):
+    disclosure_index: int = Field(description="Bildirimin KAP numarası (verilen listeden aynen)")
+    impact: Signal = Field(description="Hisse fiyatına olası etki")
+    materiality: Literal["yuksek", "orta", "dusuk"]
+    summary: str = Field(description="En fazla 2 cümle; yalnızca bildirim metninde yazanlar")
+    evidence_quote: str = Field(description="Bildirim metninden AYNEN kopyalanmış kısa alıntı (en fazla 200 karakter)")
+
+
+class DisclosureDigest(_Strict):
+    notes: list[DisclosureNote] = Field(description="Her bildirim için bir not (önemsiz rutin bildirimler atlanabilir)")
+
+
+class OutlookItem(_Strict):
+    category: Literal["hedef_beklenti", "yatirim_kapasite", "strateji", "risk"]
+    statement: str = Field(description="Şirketin geleceğe dönük ifadesinin kısa Türkçe özeti (1 cümle)")
+    horizon: str = Field(description="Zaman ufku, metinde yazıyorsa (ör. '2027', '2033-2037'); yoksa 'belirtilmemiş'")
+    source: str = Field(description="Belge adı (verilen listeden aynen)")
+    evidence_quote: str = Field(description="Belge metninden AYNEN kopyalanmış alıntı (en fazla 250 karakter)")
+
+
+class OutlookDigest(_Strict):
+    items: list[OutlookItem] = Field(description="En fazla 10 madde; önemli geleceğe dönük planlar/hedefler/riskler")
+    summary: str = Field(description="Şirketin yönetim bakışı ve gelecek planlarının en fazla 3 cümlelik özeti")

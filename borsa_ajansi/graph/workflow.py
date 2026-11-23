@@ -16,7 +16,8 @@ from agents import debate as debate_mod
 from agents import risk_manager
 from agents.llm import LLM, LLMError
 from config.settings import settings
-from tools import fundamental_data, market_data, news_sentiment
+from agents import document_reader
+from tools import financials, fundamental_data, market_data, news_sentiment
 from verification import fact_checker
 from verification.schemas import AnalystReport, FactCheckResult, FinalDecision, ValidatedTurn
 
@@ -35,6 +36,7 @@ class AnalysisState(TypedDict, total=False):
     debate: list[ValidatedTurn]
     round: int
     llm_down: bool
+    debate_failed: bool
     final: FinalDecision
 
 
@@ -45,25 +47,44 @@ def default_data_provider(ticker: str) -> dict[str, Any]:
     ctx = get_global_context()
     if market["indicators"].get("status") == "ok":
         market["indicators"].update(relative_strength(market["indicators"], ctx))
+    fund = fundamental_data.get_fundamentals(ticker)
+    cur = fund.get("financial_currency")
+    trend = financials.get_financial_trend(ticker, currency=cur if cur != "veri_yok" else None)
+    fund = financials.reconcile_fundamentals(fund, trend)
     return {
         "ticker": ticker,
         "context": ctx,
         "market": market,
-        "fundamentals": fundamental_data.get_fundamentals(ticker),
+        "fundamentals": fund,
+        "financials": trend,
         "news": news_sentiment.get_company_news(ticker),
         "macro": news_sentiment.get_macro_news(),
     }
 
 
+DocumentProvider = Callable[[LLM, str], dict]
+
+
 def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_provider,
-                progress: ProgressFn | None = None):
+                progress: ProgressFn | None = None, document_provider: DocumentProvider | None = None):
     say = progress or (lambda msg: log.info(msg))
+    if document_provider is None and settings.documents_enabled:
+        document_provider = document_reader.get_documents
 
     def fetch_data(state: AnalysisState) -> AnalysisState:
         say("📥 Veriler çekiliyor (fiyat, teknik, temel, haber)...")
         bundle = data_provider(state["ticker"])
+        if document_provider and "documents" not in bundle:
+            say("📄 KAP bildirimleri ve şirket raporları/sunumları okunuyor...")
+            try:
+                bundle = {**bundle, "documents": document_provider(llm, state["ticker"])}
+            except Exception as exc:  # belge katmanı analizi asla düşürmez
+                log.exception("Belge okuma hatası")
+                bundle = {**bundle, "documents": {"kap": {"status": "veri_yok", "reason": str(exc)[:200]},
+                                                  "outlook": {"status": "veri_yok", "reason": str(exc)[:200]}}}
         return {"bundle": bundle, "reports": {}, "checks": {}, "attempts": {}, "feedback": {},
-                "pending": list(analysts_mod.ANALYSTS), "debate": [], "round": 0, "llm_down": False}
+                "pending": list(analysts_mod.ANALYSTS), "debate": [], "round": 0, "llm_down": False,
+                "debate_failed": False}
 
     def run_analysts(state: AnalysisState) -> AnalysisState:
         pending = state["pending"]
@@ -106,7 +127,11 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
                                     state["checks"], state["debate"])
         except LLMError as exc:
             log.error("Tartışma turu başarısız (%s): %s", side, exc)
-            say(f"⚠️ {side} ajanı LLM'e erişemedi, tartışma kesildi")
+            if len(state["debate"]) >= 2:
+                # En az bir tam tur (boğa+ayı) var: karar yine verilir, güven cezalı
+                say(f"⚠️ {side} ajanı LLM'e erişemedi, tartışma {len(state['debate']) // 2}. turdan sonra kesildi")
+                return {"round": rnd, "debate_failed": True}
+            say(f"⚠️ {side} ajanı LLM'e erişemedi, tartışma yapılamadı")
             return {"round": rnd, "llm_down": True}
         return {"debate": state["debate"] + [v], "round": rnd}
 
@@ -117,10 +142,10 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
         return _turn("ayi", state)
 
     def after_bull(state: AnalysisState) -> str:
-        return "risk" if state.get("llm_down") else "bear"
+        return "risk" if state.get("llm_down") or state.get("debate_failed") else "bear"
 
     def after_bear(state: AnalysisState) -> str:
-        if state.get("llm_down"):
+        if state.get("llm_down") or state.get("debate_failed"):
             return "risk"
         r = state["round"]
         if r < settings.min_debate_rounds:
@@ -135,7 +160,8 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
         if state.get("llm_down"):
             return {"final": risk_manager.fallback_decision(*args, reason="LLM erişimi kesildi")}
         try:
-            return {"final": risk_manager.decide(llm, *args)}
+            extra = (0.10, "tartışma LLM hatasıyla erken kesildi") if state.get("debate_failed") else None
+            return {"final": risk_manager.decide(llm, *args, extra=extra)}
         except LLMError as exc:
             log.error("Risk Yöneticisi başarısız: %s", exc)
             return {"final": risk_manager.fallback_decision(*args, reason=f"Risk Yöneticisi LLM hatası: {exc}")}
@@ -158,8 +184,9 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
 
 
 def run_analysis(ticker: str, llm: LLM, data_provider: Callable[[str], dict] = default_data_provider,
-                 progress: ProgressFn | None = None) -> AnalysisState:
+                 progress: ProgressFn | None = None,
+                 document_provider: DocumentProvider | None = None) -> AnalysisState:
     ticker = market_data.normalize_ticker(ticker)
-    graph = build_graph(llm, data_provider, progress)
+    graph = build_graph(llm, data_provider, progress, document_provider)
     # recursion_limit: döngüler zaten sınırlı; ek emniyet kemeri
     return graph.invoke({"ticker": ticker}, config={"recursion_limit": 40})

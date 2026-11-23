@@ -33,6 +33,7 @@ _FIELD_MAP = {
     "sector": "sector",
     "industry": "industry",
     "currency": "currency",
+    "financialCurrency": "financial_currency",
     "longName": "name",
 }
 

@@ -9,6 +9,43 @@ EMOJI = {"AL": "🟢", "SAT": "🔴", "BEKLE": "🟡"}
 SIG = {"olumlu": "▲", "olumsuz": "▼", "notr": "■"}
 
 
+IMPACT = {"olumlu": "▲", "olumsuz": "▼", "notr": "■"}
+
+
+def _document_lines(bundle: dict[str, Any]) -> list[str]:
+    docs = bundle.get("documents")
+    fin = bundle.get("financials") or {}
+    out: list[str] = []
+    if fin.get("status") == "ok":
+        def p(k):
+            v = fin.get(k)
+            return f"{v:+.1f}%" if isinstance(v, (int, float)) else "veri_yok"
+        out += ["", f"📊 Son çeyrek ({fin['latest_quarter']}): satış yıllık {p('revenue_yoy_pct')}, "
+                    f"net kâr yıllık {p('net_income_yoy_pct')}, net marj değişimi "
+                    + (f"{fin['net_margin_change_pts']:+.1f} puan" if isinstance(fin.get('net_margin_change_pts'), (int, float))
+                       else "veri_yok")]
+    if not docs:
+        return out
+    k, o = docs.get("kap") or {}, docs.get("outlook") or {}
+    out += ["", "📄 Belgeler"]
+    if k.get("status") == "ok":
+        notes = k.get("notes", [])
+        out.append(f"KAP: {k.get('disclosure_count', 0)} bildirim okundu, {len(notes)} doğrulanmış not"
+                   + (f", {k['rejected_notes']} doğrulanamayan atıldı" if k.get("rejected_notes") else ""))
+        for n in sorted(notes, key=lambda n: {"yuksek": 0, "orta": 1, "dusuk": 2}[n["materiality"]])[:3]:
+            out.append(f"  {IMPACT[n['impact']]} {n['date'][:10]} {n['title']}: {n['summary']}")
+    else:
+        out.append(f"KAP: veri_yok ({k.get('reason', '-')})")
+    if o.get("status") == "ok":
+        names = ", ".join(d["name"] for d in o.get("documents", []))
+        out.append(f"Rapor/sunum: {names} → {len(o.get('items', []))} gelecek planı maddesi")
+        for it in o.get("items", [])[:3]:
+            out.append(f"  • [{it['horizon']}] {it['statement']}")
+    else:
+        out.append(f"Rapor/sunum: veri_yok ({o.get('reason', '-')})")
+    return out
+
+
 def format_report(state: dict[str, Any]) -> str:
     f: FinalDecision = state["final"]
     lines = [
@@ -27,6 +64,7 @@ def format_report(state: dict[str, Any]) -> str:
             f"Risk/Ödül: {p.risk_reward}",
             f"Dayanak: {p.basis}",
         ]
+    lines += _document_lines(state.get("bundle", {}))
     lines += ["", "🧠 Analistler"]
     for name, r in state.get("reports", {}).items():
         chk = state.get("checks", {}).get(name)

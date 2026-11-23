@@ -101,8 +101,12 @@ def build_risk_prompt(ticker, reports, checks, debate, penalties_reasons, contex
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def decide(llm: LLM, ticker: str, bundle, reports, checks, debate) -> FinalDecision:
+def decide(llm: LLM, ticker: str, bundle, reports, checks, debate,
+           extra: tuple[float, str] | None = None) -> FinalDecision:
     pen, pen_reasons = confidence_penalties(bundle, reports, checks, debate)
+    if extra:
+        pen += extra[0]
+        pen_reasons = pen_reasons + [f"{extra[1]} (-{extra[0]:.2f})"]
     judgement = llm.with_structured_output(RiskJudgement, tier="reasoning").invoke(
         prompts.RISK_MANAGER, build_risk_prompt(ticker, reports, checks, debate, pen_reasons, bundle.get("context")))
     return apply_gates(ticker, bundle, reports, judgement, pen, pen_reasons)

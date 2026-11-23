@@ -29,6 +29,22 @@ def _titles(items: Any, limit: int = 8) -> Any:
     return [{"title": i.get("title"), "published": i.get("published")} for i in items[:limit]]
 
 
+def _outlook_view(o: dict | None) -> Any:
+    if not o or o.get("status") != "ok":
+        return {"status": VERI_YOK, "reason": (o or {}).get("reason", "belge okunmadı")}
+    return {"status": "ok", "documents": [d["name"] for d in o.get("documents", [])], "summary": o.get("summary"),
+            "items": [{k: i[k] for k in ("category", "statement", "horizon")} for i in o.get("items", [])]}
+
+
+def _kap_view(k: dict | None) -> Any:
+    if not k or k.get("status") != "ok":
+        return {"status": VERI_YOK, "reason": (k or {}).get("reason", "KAP okunmadı")}
+    view: dict[str, Any] = {"status": "ok", "notes": k.get("notes", [])}
+    if k.get("headlines"):
+        view["headlines_only"] = k["headlines"]
+    return view
+
+
 def raw_data_for(analyst: AnalystName, bundle: dict[str, Any]) -> dict[str, Any]:
     """Analistin gördüğü ham veri. Fact-checker da AYNI sözlükle karşılaştırır."""
     ind = bundle.get("market", {}).get("indicators", {"status": VERI_YOK})
@@ -36,8 +52,11 @@ def raw_data_for(analyst: AnalystName, bundle: dict[str, Any]) -> dict[str, Any]
     news = bundle.get("news", {"status": VERI_YOK})
     if analyst == "teknik":
         return dict(ind)
+    docs = bundle.get("documents") or {}
     if analyst == "temel":
-        return {"date": date, "close": ind.get("close", VERI_YOK), **bundle.get("fundamentals", {"status": VERI_YOK})}
+        return {"date": date, "close": ind.get("close", VERI_YOK), **bundle.get("fundamentals", {"status": VERI_YOK}),
+                "financial_trend": bundle.get("financials", {"status": VERI_YOK}),
+                "company_outlook": _outlook_view(docs.get("outlook"))}
     if analyst == "gundem":
         macro = bundle.get("macro", {}).get("macro", VERI_YOK)
         return {
@@ -48,6 +67,7 @@ def raw_data_for(analyst: AnalystName, bundle: dict[str, Any]) -> dict[str, Any]
             "kap_news": _titles(news.get("kap_news", VERI_YOK)),
             "macro": {k: _titles(v, 4) for k, v in macro.items()} if isinstance(macro, dict) else VERI_YOK,
             "market_context": bundle.get("context", VERI_YOK),
+            "kap_disclosures": _kap_view(docs.get("kap")),
         }
     if analyst == "duygu":
         sm = bundle.get("market", {}).get("sentiment_metrics", {"status": VERI_YOK})

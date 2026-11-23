@@ -147,7 +147,7 @@ def test_cli_end_to_end(monkeypatch, provider, tmp_path, capsys):
     import agents.llm as llm_mod
     monkeypatch.setattr(llm_mod, "get_llm", lambda: FakeLLM(Script()))
     monkeypatch.setattr(wf, "default_data_provider", provider)
-    monkeypatch.setattr(wf.run_analysis, "__defaults__", (provider, None))
+    monkeypatch.setattr(wf.run_analysis, "__defaults__", (provider, None, None))
     monkeypatch.setenv("DB_PATH", str(tmp_path / "t.db"))
     import memory.db as dbm
     monkeypatch.setattr(dbm, "default_db_path", lambda: str(tmp_path / "t.db"))
@@ -199,3 +199,21 @@ def test_llm_fails_mid_debate_returns_bekle(provider):
     st = run_analysis("TEST.IS", llm, data_provider=provider)
     assert st["final"].decision == "BEKLE"
     assert sum(c["schema"] == "DebateTurn" for c in llm.calls) == 1
+
+
+def test_debate_fails_after_full_round_still_decides_with_penalty(provider):
+    from agents.llm import LLMError
+    base = Script(confidence=0.95)
+    seen = {"n": 0}
+
+    def flaky(schema, system, user):
+        if schema is DebateTurn:
+            seen["n"] += 1
+            if seen["n"] > 2:
+                raise LLMError("503")
+        return base(schema, system, user)
+    llm = FakeLLM(flaky)
+    st = run_analysis("TEST.IS", llm, data_provider=provider)
+    assert any(c["schema"] == "RiskJudgement" for c in llm.calls)
+    assert any("erken kesildi" in g for g in st["final"].gate_reasons)
+    assert st["final"].confidence <= 0.85 + 1e-9

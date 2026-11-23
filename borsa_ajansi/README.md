@@ -2,7 +2,8 @@
 
 ```
 küresel bağlam (BIST100/30, banka, USD/TRY, Brent, altın, S&P, Nasdaq, DAX, VIX, DXY, ABD 10Y)
-  + hisse verisi (yfinance/ta, temel veri, KAP/haber RSS)
+  + hisse verisi (yfinance/ta, temel veri, çeyreklik bilanço trendi, haber RSS)
+  + belgeler (KAP bildirim metinleri, faaliyet raporu / yatırımcı sunumu PDF'leri → doğrulanmış özet)
    → 4 analist (paralel, hızlı model)
    → 1. Kademe Fact-Checker (programatik, en fazla 2 yeniden deneme)
    → 2. Kademe Boğa/Ayı tartışması (güçlü model, dayanaksız argüman elenir)
@@ -48,10 +49,22 @@ Otomatik (hafta içi): 10:30 işlem döngüsü, 18:30 stop/hedef kontrolü + gü
 ## LLM sağlayıcıları
 - `ANTHROPIC_API_KEY` varsa Claude (Haiku 5.5 analist, Opus 5.5 tartışma/risk), yoksa Gemini.
 - `FAST_PROVIDER` / `REASONING_PROVIDER` ile katman bazında karıştırılabilir.
-- Gemini: model yoğunsa (503) sıradaki modele geçer, günlük kotası biten modeli atlar.
+- Gemini: model yoğunsa (503) sıradaki modele geçer, günlük kotası biten modeli atlar; güçlü modellerin hepsi
+  düşerse hızlı modellere iner. Kredi/hesap hatasında (402/401/403) `GEMINI_API_KEY_BACKUP` devreye girer.
+- Tartışma en az bir tam turdan sonra koparsa karar yine verilir (güven -0.10 cezalı).
   LLM tamamen erişilemezse sistem çökmez, güven 0 ile BEKLE döner.
 - Gemini ücretsiz katmanı model başına günde ~20 istekle sınırlı; `.env`'de ekonomik ayarlar
   (`SIM_CANDIDATES=2`, `MIN_DEBATE_ROUNDS=1`, `MORNING_REPORT_ENABLED=false`) bu yüzden açık.
+
+## Şirket belgeleri
+- **Çeyreklik trend** (`tools/financials.py`): son çeyrek satış/kâr/FAVÖK, yıllık ve çeyreklik büyüme, marj değişimi,
+  TTM, borç. Özet verideki FAVÖK son 4 çeyrekle çelişirse TTM esas alınır.
+- **KAP** (`tools/kap.py`): şirketin son 45 gündeki kendi bildirimlerinin tam metni okunur, hızlı model etkisini özetler.
+- **Faaliyet raporu / yatırımcı sunumu**: son 200 gündeki PDF ekleri indirilir, geleceğe dönük sayfalar seçilir,
+  hedef/yatırım/strateji/risk maddeleri çıkarılır.
+- Halüsinasyon kontrolü: her madde kaynak metinden birebir alıntı içermeli ve içindeki her sayı kaynakta geçmeli;
+  geçemeyen madde atılır. Özetler SQLite'ta önbelleklenir (aynı belge için tekrar LLM çağrısı yok).
+- Kapatmak için `.env`: `DOCUMENTS_ENABLED=false`.
 
 ## Tasarım kuralları
 - Tüm matematik (RSI, MA, % değişim, giriş/stop/hedef, R/Ö, pozisyon büyüklüğü, K/Z) Python'da; LLM yalnızca yorumlar.
@@ -60,7 +73,6 @@ Otomatik (hafta içi): 10:30 işlem döngüsü, 18:30 stop/hedef kontrolü + gü
 - Gizli bilgiler yalnızca `.env`'de; `.env` ve `*.db` git dışı.
 
 ## Notlar
-- Borsa MCP için `tools/fundamental_data.fetch_from_borsa_mcp` adaptör noktası hazır (henüz bağlı değil).
 - yfinance BIST verisi ~15 dk gecikmeli olabilir; simülasyon bu fiyatları kullanır.
 - `jiter==0.10.0` ve `ormsgpack==1.13.0` sabitlendi: Windows Akıllı Uygulama Denetimi bazı yeni DLL'leri engelliyor.
 - Yatırım tavsiyesi değildir; sistem eğitim ve simülasyon amaçlıdır.

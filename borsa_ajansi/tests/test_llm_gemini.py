@@ -83,3 +83,22 @@ def test_daily_quota_blocks_model_for_process():
     with pytest.raises(LLMError, match="günlük kotası"):
         r3.invoke("s", "u")
     assert fm3.calls == []
+
+
+def test_credit_error_switches_to_backup_key_and_blocks_primary():
+    import agents.llm as m
+    main_m, backup_m = FakeModels([_err(402)]), FakeModels([GOOD, GOOD])
+    clients = [("ana", SimpleNamespace(models=main_m)), ("yedek", SimpleNamespace(models=backup_m))]
+    r = _GeminiStructured(clients, RiskJudgement, ["m1", "m2"], sleep=lambda s: None)
+    assert r.invoke("s", "u").decision == "BEKLE"
+    assert main_m.calls == ["m1"] and backup_m.calls == ["m1"]
+    assert "ana/*" in m.blocked_models()
+    r.invoke("s", "u")  # ana anahtar artık hiç denenmez
+    assert main_m.calls == ["m1"]
+
+
+def test_credit_error_without_backup_raises_clear_message():
+    r, fm = _run([_err(402)])
+    with pytest.raises(LLMError, match="hesabı kullanılamıyor"):
+        r.invoke("s", "u")
+    assert fm.calls == ["m1"]

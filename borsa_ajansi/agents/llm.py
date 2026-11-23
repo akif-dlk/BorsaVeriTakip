@@ -110,23 +110,47 @@ def blocked_models() -> dict[str, float]:
         return {m: t for m, t in _MODEL_BLOCKED_UNTIL.items() if t > now}
 
 
-class _GeminiStructured(Generic[T]):
-    """Model zinciri: model yoğunsa (503) sıradakine geçer; günlük kotası biten modeli süreç boyunca atlar;
-    tüm modeller kullanılamazsa hemen LLMError (boşuna bekleme yok)."""
+_ACCOUNT_ERRORS = {401, 402, 403}  # geçersiz anahtar / kredi bitti / yetki yok -> o anahtarın tümü kullanılamaz
 
-    def __init__(self, client, schema: type[T], models: list[str], rounds: int = 2, base_sleep: float = 3.0,
+
+def _bkey(label: str, model: str) -> str:
+    return f"{label}/{model}" if label else model
+
+
+class _GeminiStructured(Generic[T]):
+    """Anahtar + model zinciri.
+
+    - 503/5xx: sıradaki modele geçer, tur sonunda artan bekleme ile tekrar dener.
+    - 404: model zincirden çıkarılır. 429 (günlük kota): o anahtar için model süreç boyunca atlanır.
+    - 401/402/403 (hesap/kredi): o anahtarın tamamı bloklanır, varsa yedek anahtara geçilir.
+    - Kullanılabilir hiçbir şey kalmazsa hemen LLMError (boşuna bekleme yok).
+    """
+
+    def __init__(self, client, schema: type[T], models: list[str], rounds: int = 3, base_sleep: float = 4.0,
                  sleep=None):
         import time
 
-        self.client, self.schema, self.models = client, schema, models
+        # Geriye dönük uyum: tek istemci ya da [(etiket, istemci), ...]
+        self.clients: list[tuple[str, object]] = client if isinstance(client, list) else [("", client)]
+        self.schema, self.models = schema, list(dict.fromkeys(models))
         self.rounds, self.base_sleep = rounds, base_sleep
         self.sleep = sleep or time.sleep
 
-    def _block(self, model: str, seconds: float) -> None:
+    @staticmethod
+    def _block(key: str, seconds: float) -> None:
         import time
 
         with _BLOCK_LOCK:
-            _MODEL_BLOCKED_UNTIL[model] = time.time() + seconds
+            _MODEL_BLOCKED_UNTIL[key] = time.time() + seconds
+
+    def _usable(self) -> list[tuple[str, object, str]]:
+        blocked = blocked_models()
+        out = []
+        for label, client in self.clients:
+            if _bkey(label, "*") in blocked:
+                continue
+            out += [(label, client, m) for m in self.models if _bkey(label, m) not in blocked]
+        return out
 
     def invoke(self, system: str, user: str) -> T:
         from google.genai import errors, types
@@ -137,37 +161,51 @@ class _GeminiStructured(Generic[T]):
             response_mime_type="application/json",
             response_json_schema=self.schema.model_json_schema(),
             temperature=0.2,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
         last: Exception | None = None
+        account_msg: str | None = None
         for rnd in range(self.rounds):
-            usable = [m for m in self.models if m not in blocked_models()]
+            usable = self._usable()
             if not usable:
+                if account_msg:
+                    raise LLMError(f"Gemini hesabı kullanılamıyor: {account_msg}")
                 raise LLMError("Gemini: zincirdeki tüm modellerin günlük kotası dolu / model kullanılamıyor")
-            for model in usable:
+            for label, client, model in usable:
+                blocked = blocked_models()
+                if _bkey(label, "*") in blocked or _bkey(label, model) in blocked:
+                    continue  # bu tur içinde bloklandı
                 try:
-                    resp = self.client.models.generate_content(model=model, contents=user, config=cfg)
-                    text = resp.text or ""
-                    return self.schema.model_validate_json(text)
+                    resp = client.models.generate_content(model=model, contents=user, config=cfg)
+                    return self.schema.model_validate_json(resp.text or "")
                 except errors.APIError as exc:
                     last = exc
+                    tag = f"{label + ' ' if label else ''}{model}"
+                    if exc.code in _ACCOUNT_ERRORS:
+                        account_msg = f"({exc.code}) {str(exc.message)[:160]}"
+                        self._block(_bkey(label, "*"), 3600 if exc.code == 402 else 86400)
+                        log.error("Gemini anahtarı %s kullanılamıyor %s", label or "(ana)", account_msg)
+                        continue
                     if exc.code == 404:
-                        self._block(model, 86400)
-                        log.warning("Gemini %s kullanılamıyor (404), zincirden çıkarıldı", model)
+                        self._block(_bkey(label, model), 86400)
+                        log.warning("Gemini %s kullanılamıyor (404), zincirden çıkarıldı", tag)
                         continue
                     if exc.code == 429 and (delay := _daily_quota_delay(exc)) is not None:
-                        self._block(model, delay)
-                        log.warning("Gemini %s günlük kotası doldu, %.1f saat atlanacak", model, delay / 3600)
+                        self._block(_bkey(label, model), delay)
+                        log.warning("Gemini %s günlük kotası doldu, %.1f saat atlanacak", tag, delay / 3600)
                         continue
                     if exc.code in _RETRYABLE:
-                        log.warning("Gemini %s geçici hata %s, sıradaki model deneniyor", model, exc.code)
+                        log.warning("Gemini %s geçici hata %s, sıradaki model deneniyor", tag, exc.code)
                         continue
                     raise LLMError(f"Gemini API hatası ({exc.code}): {exc.message}") from exc
                 except ValidationError as exc:
                     last = exc
                     log.warning("Gemini %s şemaya uymayan çıktı verdi, sıradaki model", model)
                     continue
-            if rnd < self.rounds - 1:
+            if rnd < self.rounds - 1 and self._usable():
                 self.sleep(self.base_sleep * (2 ** rnd))
+        if account_msg and not self._usable():
+            raise LLMError(f"Gemini hesabı kullanılamıyor: {account_msg}")
         raise LLMError(f"Gemini: tüm modeller başarısız ({type(last).__name__}: {str(last)[:200]})")
 
 
@@ -178,11 +216,18 @@ class GeminiLLM:
 
             if not settings.gemini_api_key:
                 raise LLMError("GEMINI_API_KEY .env içinde tanımlı değil")
-            client = genai.Client(api_key=settings.gemini_api_key, http_options={"api_version": "v1beta"})
+            opts = {"api_version": "v1beta"}
+            client = [("ana", genai.Client(api_key=settings.gemini_api_key, http_options=opts))]
+            if settings.gemini_api_key_backup:
+                client.append(("yedek", genai.Client(api_key=settings.gemini_api_key_backup, http_options=opts)))
         self.client = client
 
     def with_structured_output(self, schema: type[T], tier: Tier) -> _GeminiStructured[T]:
-        models = settings.gemini_fast_models if tier == "fast" else settings.gemini_reasoning_models
+        if tier == "fast":
+            models = settings.gemini_fast_models
+        else:
+            # Güçlü modellerin hepsi yoğun/kotasızsa son çare olarak hızlı modellere düş
+            models = settings.gemini_reasoning_models + settings.gemini_fast_models
         return _GeminiStructured(self.client, schema, models)
 
 

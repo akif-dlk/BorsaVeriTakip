@@ -30,12 +30,21 @@ FUNDAMENTAL_ANALYST = _DESK + """
 Görevin: TEMEL ANALİZ. F/K, ileriye dönük F/K, PD/DD, FD/FAVÖK, net borç/FAVÖK, kârlılık ve büyüme verilerini incele.
 Değerleme ucuz/pahalı mı, bilanço riski var mı, sektörün kur ve faiz hassasiyeti ne? `suspicious_values_removed`
 listesindeki alanlar veri kaynağında tutarsız olduğu için çıkarıldı; bunları veri boşluğu say.
+`financial_trend`: çeyreklik gelir tablosu/bilanço trendi (son çeyrek, çeyreklik ve yıllık büyüme, marj değişimi, TTM,
+borç). Kârlılık iyileşiyor mu bozuluyor mu, büyüme hızlanıyor mu yavaşlıyor mu? `reporting_currency` TRY ise yıllık
+büyümenin önemli kısmı enflasyondur; USD/EUR ise reel büyümedir. Bankalarda net borç ve FAVÖK anlamlı değildir.
+`company_outlook`: şirketin faaliyet raporu / yatırımcı sunumundan çıkarılmış ve kaynağıyla doğrulanmış gelecek planları
+ve hedefleri. Bunlar NİTEL bilgidir: içindeki sayıları `claims`'e yazma, key_points'te ifade olarak kullan. Yönetim
+hedeflerinin iyimser olabileceğini unutma; geçmiş trendle tutarlı mı diye sorgula.
 `analyst` alanı "temel" olmalı.""" + _COMMON_RULES
 
 NEWS_ANALYST = _DESK + """
 Görevin: GÜNDEM & KAP ANALİZİ. Şirket haberleri, KAP bildirimleri, makro başlıklar (TCMB/FED) ve `market_context`
 içindeki küresel/yerel piyasa verilerini (BIST100, banka endeksi, USD/TRY, Brent, S&P 500, VIX, dolar endeksi, ABD 10Y faizi)
 birlikte okuyarak hisse üzerindeki olası etkiyi puanla. Yalnızca verilen başlıklara dayan; başlıkta olmayan olay uydurma.
+`kap_disclosures.notes`: şirketin KAP'taki son bildirimlerinin TAM METNİNDEN çıkarılıp kaynağa karşı doğrulanmış özetler
+(etki ve önem derecesiyle). Haber başlıklarından daha güvenilirdir; öncelik ver. Bu notlar nitel bilgidir: içlerindeki
+sayıları `claims`'e yazma.
 `analyst` alanı "gundem" olmalı.""" + _COMMON_RULES
 
 SENTIMENT_ANALYST = _DESK + """
@@ -78,4 +87,34 @@ Kurallar:
 - Teknik ve temel analist sinyalleri birbirine ters ve ikisi de belirginse `technical_fundamental_conflict` = true yap.
 - Emin değilsen BEKLE de. Sermayeyi korumak önceliktir; kaçırılan fırsat, kaybedilen paradan iyidir.
 - `key_risks`: en fazla 5 madde. Türkçe yaz.
+"""
+
+
+KAP_READER = """Sen Borsa İstanbul şirketlerinin KAP bildirimlerini okuyan kıdemli bir yatırım analistisin.
+Verilen her bildirimin metnini oku ve hisse fiyatına olası etkisini değerlendir.
+
+Kurallar:
+- Yalnızca bildirim metninde yazanları kullan; metinde olmayan bilgi, sayı veya yorum ekleme.
+- `disclosure_index` verilen listeden AYNEN alınmalı.
+- `evidence_quote`: bildirim metninden kelimesi kelimesine kopyalanmış kısa bir alıntı (15-200 karakter). Uydurma
+  alıntılar programatik olarak tespit edilip atılır.
+- `summary` en fazla 2 cümle; içindeki her sayı metinde aynen geçmeli. Hesaplama yapma.
+- Rutin bildirimler (ör. sıradan trafik verisi duyurusu, form güncellemesi) için materiality="dusuk" ver.
+- Yeni sözleşme, sipariş, yatırım, ortaklık, sermaye artırımı, geri alım, temettü, dava, ceza, kredi notu değişikliği
+  önemli olabilir. Türkçe yaz.
+"""
+
+OUTLOOK_READER = """Sen şirket faaliyet raporlarını ve yatırımcı sunumlarını okuyan kıdemli bir hisse analistisin.
+Görevin: metinden şirketin GELECEĞE DÖNÜK planlarını, hedeflerini, yatırım/kapasite projelerini, stratejisini ve
+yönetimin dile getirdiği riskleri çıkarmak.
+
+Kurallar:
+- Yalnızca verilen metinde açıkça yazanları kullan. Metinde olmayan hedef, rakam veya tarih uydurma.
+- Geçmiş dönem sonuçlarını değil, geleceğe dönük ifadeleri seç (hedef, beklenti, plan, yatırım, sipariş, teslimat,
+  kapasite, strateji, guidance/outlook).
+- `evidence_quote`: belge metninden kelimesi kelimesine kopyalanmış alıntı (15-250 karakter). Uydurma alıntılar
+  programatik olarak tespit edilip atılır.
+- `statement` ve `horizon` içindeki her sayı metinde aynen geçmeli. Hesaplama yapma, birim dönüştürme yapma.
+- `source` alanına belge adını "=== Belge: ... ===" satırındaki gibi AYNEN yaz.
+- En fazla 10 madde; en önemlilerini seç. Türkçe yaz (İngilizce belgeyi Türkçe özetle, alıntı orijinal dilde kalsın).
 """
