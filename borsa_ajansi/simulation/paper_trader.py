@@ -134,6 +134,8 @@ class PaperTrader:
         self.analyze_fn = analyze_fn
         self.screen_fn = screen_fn
         self.clock = clock
+        # Uzun süren döngüde ara bilgi (Telegram'a anlık mesaj); varsayılan sessiz
+        self.progress: Callable[[str], None] = lambda msg: None
         with self._conn() as c:
             c.executescript(SCHEMA)
 
@@ -298,6 +300,7 @@ class PaperTrader:
 
         # 1) Açık pozisyonlar: SAT -> kapat, AL -> stop'u yukarı çek (asla aşağı değil)
         for t in self.open_trades(run["id"]):
+            self.progress(f"🔁 Açık pozisyon {t['ticker']} yeniden değerlendiriliyor...")
             try:
                 f = self.analyze_fn(t["ticker"])["final"]
             except Exception as exc:
@@ -318,12 +321,17 @@ class PaperTrader:
         if slots <= 0:
             msgs.append("Maksimum pozisyon sayısına ulaşıldı, yeni alım yok.")
             return msgs
+        self.progress("🔍 BIST30 taranıyor (teknik puanlama)...")
         candidates = self.screen_fn(exclude=held)
-        msgs.append("🔍 Tarama adayları: " + (", ".join(f"{c['ticker']}({c['score']})" for c in candidates) or "yok"))
-        for cand in candidates:
+        line = "🔍 Tarama adayları: " + (", ".join(f"{c['ticker']}({c['score']})" for c in candidates) or "yok")
+        msgs.append(line)
+        self.progress(line)
+        for i, cand in enumerate(candidates, 1):
             if slots <= 0:
                 break
             tk = cand["ticker"]
+            self.progress(f"🧠 {tk} analiz ediliyor ({i}/{len(candidates)}): belgeler, 4 analist, tartışma, risk. "
+                          f"Model yoğunsa birkaç dakika sürebilir...")
             try:
                 f = self.analyze_fn(tk)["final"]
             except Exception as exc:

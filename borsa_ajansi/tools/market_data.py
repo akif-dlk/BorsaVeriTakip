@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -67,8 +68,35 @@ def _support_resistance(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def compute_indicators(df: pd.DataFrame) -> dict[str, Any]:
-    """Saf fonksiyon: OHLCV DataFrame -> indikatör sözlüğü. Yetersiz veri alanları 'veri_yok' olur."""
+_TR = timezone(timedelta(hours=3))
+_SESSION_OPEN, _SESSION_CLOSE = time(10, 0), time(18, 10)  # BIST pay piyasası (kapanış seansı dahil)
+_SESSION_MIN = (18 * 60) - (10 * 60)  # sürekli işlem: 10:00-18:00 = 480 dk
+_MIN_FRACTION_FOR_ESTIMATE = 0.25  # seansın ilk ~2 saatinde orantılama güvenilmez (açılış hacmi yüksek)
+
+
+def session_progress(bar_date: date, now: datetime | None = None) -> float | None:
+    """Son mum bugünün henüz kapanmamış seansına aitse geçen seans oranını (0-1) döner, değilse None.
+
+    Not: tatil günleri dikkate alınmaz; tatilde yfinance bugünün mumunu vermediği için sorun olmaz.
+    """
+    now = (now or datetime.now(_TR)).astimezone(_TR)
+    if bar_date != now.date() or now.weekday() >= 5:
+        return None
+    t = now.time()
+    if t >= _SESSION_CLOSE:
+        return None  # seans kapandı, mum tamamlandı
+    if t < _SESSION_OPEN:
+        return 0.0
+    elapsed = (now.hour * 60 + now.minute) - 10 * 60
+    return max(0.0, min(1.0, elapsed / _SESSION_MIN))
+
+
+def compute_indicators(df: pd.DataFrame, now: datetime | None = None) -> dict[str, Any]:
+    """Saf fonksiyon: OHLCV DataFrame -> indikatör sözlüğü. Yetersiz veri alanları 'veri_yok' olur.
+
+    Seans içinde çağrılırsa son mum yarımdır: fiyat göstergeleri anlık fiyatla hesaplanır, ama hacim
+    tam günlük ortalamayla doğrudan kıyaslanmaz (bkz. volume_basis).
+    """
     if df is None or df.empty or len(df) < 2:
         return {"status": VERI_YOK}
 
@@ -85,8 +113,25 @@ def compute_indicators(df: pd.DataFrame) -> dict[str, Any]:
     stoch = StochasticOscillator(high, low, close).stoch().iloc[-1] if n >= 17 else None
 
     last_close = float(close.iloc[-1])
+    last_idx = df.index[-1]
+    bar_date = last_idx.date() if hasattr(last_idx, "date") else None
+    progress = session_progress(bar_date, now) if bar_date else None
+    intraday = progress is not None
+
     avg_vol20 = vol.tail(21).iloc[:-1].mean() if n >= 21 else None
-    vol_ratio = (float(vol.iloc[-1]) / float(avg_vol20)) if avg_vol20 else None
+    vol_ratio, vol_basis = None, "tam_gun"
+    if avg_vol20:
+        if not intraday:
+            vol_ratio = float(vol.iloc[-1]) / float(avg_vol20)
+        elif progress >= _MIN_FRACTION_FOR_ESTIMATE:
+            # yarım günün hacmi, ortalamanın geçen seans oranı kadarıyla kıyaslanır
+            vol_ratio = float(vol.iloc[-1]) / (float(avg_vol20) * progress)
+            vol_basis = "seans_ici_orantili_tahmin"
+        elif n >= 22:
+            # seans çok yeni: son TAMAMLANMIŞ günün hacmini, ondan önceki 20 günle kıyasla
+            prev_avg = vol.iloc[-22:-2].mean()
+            vol_ratio = float(vol.iloc[-2]) / float(prev_avg) if prev_avg else None
+            vol_basis = "onceki_tam_gun"
     ma20, ma50, ma200 = sma(20), sma(50), sma(200)
 
     def pct_change(k: int):
@@ -118,6 +163,11 @@ def compute_indicators(df: pd.DataFrame) -> dict[str, Any]:
         "avg_volume_20d": _clean(avg_vol20, 0),
         "volume_ratio": _clean(vol_ratio, 2),
         "volume_anomaly": bool(vol_ratio >= 2.0) if vol_ratio is not None else VERI_YOK,
+        # tam_gun | seans_ici_orantili_tahmin | onceki_tam_gun
+        "volume_basis": vol_basis,
+        # True: son mum seans içi (kapanmamış); close = anlık fiyat, günlük değişim/RSI geçicidir
+        "intraday_bar": intraday,
+        "session_elapsed_pct": _clean(progress * 100, 0) if intraday else VERI_YOK,
         "high_52w": _clean(hi52),
         "low_52w": _clean(lo52),
         "dist_from_52w_high_pct": _clean((last_close / hi52 - 1) * 100, 2),
@@ -150,6 +200,7 @@ def compute_sentiment_metrics(ind: dict[str, Any]) -> dict[str, Any]:
         "dist_from_52w_high_pct": ind.get("dist_from_52w_high_pct"),
         "change_5d_pct": ind.get("change_5d_pct"),
         "volume_ratio": ind.get("volume_ratio"),
+        "volume_basis": ind.get("volume_basis"),
     }
 
 

@@ -17,6 +17,9 @@ Kurallar:
   'market_context.bist100.change_5d_pct' gibi nokta notasyonu) ve değeri AYNEN kopyalayarak yaz.
 - Ham veride olmayan bir sayıyı asla uydurma. Değeri "veri_yok" olan alanlar için sayı iddia etme; bunları `data_gaps`'e yaz.
 - `data_date` alanına ham verideki "date" değerini aynen yaz; tarih yoksa "veri_yok" yaz.
+- `intraday_bar` true ise seans hâlâ açıktır: close anlık fiyattır, günlük değişim/RSI/Stokastik gün sonuna kadar
+  değişebilir. Hacmi `volume_basis`'e göre yorumla: "seans_ici_orantili_tahmin" bir tahmindir, "onceki_tam_gun" dünün
+  hacmidir; seans içi düşük ham hacmi "katılım yok" diye yorumlama.
 - key_points en fazla 5 kısa, somut madde. summary en fazla 3 cümle.
 - Türkçe yaz.
 """

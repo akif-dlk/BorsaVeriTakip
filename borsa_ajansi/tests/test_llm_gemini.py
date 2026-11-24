@@ -102,3 +102,16 @@ def test_credit_error_without_backup_raises_clear_message():
     with pytest.raises(LLMError, match="hesabı kullanılamıyor"):
         r.invoke("s", "u")
     assert fm.calls == ["m1"]
+
+
+def test_timeout_moves_to_next_model_instead_of_hanging():
+    import httpx
+    r, fm = _run([httpx.ReadTimeout("yavaş"), GOOD])
+    assert r.invoke("s", "u").decision == "BEKLE"
+    assert fm.calls == ["m1", "m2"]
+
+
+def test_unexpected_exception_is_not_swallowed():
+    r, _ = _run([KeyError("bug")])
+    with pytest.raises(KeyError):
+        r.invoke("s", "u")

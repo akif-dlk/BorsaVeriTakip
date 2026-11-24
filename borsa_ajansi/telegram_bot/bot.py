@@ -246,6 +246,14 @@ async def run_sim_cycle(app_bot, svc: Services, chat_ids: list[int], full: bool 
     if svc.trader is None or not svc.trader.active_run() or svc.sim_lock.locked():
         return
     async with svc.sim_lock:
+        loop = asyncio.get_running_loop()
+
+        def progress(text: str) -> None:  # işçi thread'inden güvenli gönderim
+            for cid in chat_ids:
+                asyncio.run_coroutine_threadsafe(app_bot.send_message(chat_id=cid, text=text), loop)
+
+        if full:
+            svc.trader.progress = progress
         try:
             msgs = await asyncio.to_thread(svc.trader.trade_cycle if full else svc.trader.check_exits)
             if not full:
@@ -253,6 +261,8 @@ async def run_sim_cycle(app_bot, svc: Services, chat_ids: list[int], full: bool 
         except Exception as exc:
             log.exception("Simülasyon döngüsü hatası")
             msgs = [f"❌ Simülasyon döngüsü hatası: {exc}"]
+        finally:
+            svc.trader.progress = lambda text: None
         report = await asyncio.to_thread(svc.trader.report)
     title = "🤖 İşlem döngüsü" if full else "🌆 Gün sonu kontrolü"
     body = "\n".join(msgs) if msgs else "Yeni işlem yok."

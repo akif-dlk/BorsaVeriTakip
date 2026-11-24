@@ -113,6 +113,13 @@ def blocked_models() -> dict[str, float]:
 _ACCOUNT_ERRORS = {401, 402, 403}  # geçersiz anahtar / kredi bitti / yetki yok -> o anahtarın tümü kullanılamaz
 
 
+def _is_transport_error(exc: Exception) -> bool:
+    """httpx / httpx2 (google-genai) zaman aşımı ve ağ hataları; sınıf adına bakılır, iki kütüphaneyi de kapsar."""
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    return any(c.__name__ in ("TimeoutException", "TransportError") for c in type(exc).__mro__)
+
+
 def _bkey(label: str, model: str) -> str:
     return f"{label}/{model}" if label else model
 
@@ -202,6 +209,12 @@ class _GeminiStructured(Generic[T]):
                     last = exc
                     log.warning("Gemini %s şemaya uymayan çıktı verdi, sıradaki model", model)
                     continue
+                except Exception as exc:  # zaman aşımı / bağlantı kopması: askıda kalmak yerine sıradaki model
+                    if not _is_transport_error(exc):
+                        raise
+                    last = exc
+                    log.warning("Gemini %s yanıt vermedi (%s), sıradaki model", model, type(exc).__name__)
+                    continue
             if rnd < self.rounds - 1 and self._usable():
                 self.sleep(self.base_sleep * (2 ** rnd))
         if account_msg and not self._usable():
@@ -216,7 +229,8 @@ class GeminiLLM:
 
             if not settings.gemini_api_key:
                 raise LLMError("GEMINI_API_KEY .env içinde tanımlı değil")
-            opts = {"api_version": "v1beta"}
+            # Tek istek en fazla GEMINI_TIMEOUT_S sn; askıda kalan istek tüm döngüyü kilitlemesin
+            opts = {"api_version": "v1beta", "timeout": int(settings.gemini_timeout_s * 1000)}
             client = [("ana", genai.Client(api_key=settings.gemini_api_key, http_options=opts))]
             if settings.gemini_api_key_backup:
                 client.append(("yedek", genai.Client(api_key=settings.gemini_api_key_backup, http_options=opts)))
@@ -231,6 +245,158 @@ class GeminiLLM:
         return _GeminiStructured(self.client, schema, models)
 
 
+# ---------------------------------------------------------------------------
+# EVREN (OpenAI uyumlu /chat/completions + json_schema yapılandırılmış çıktı)
+# ---------------------------------------------------------------------------
+_EVREN_SEM = None
+_EVREN_SEM_LOCK = __import__("threading").Lock()
+
+
+def _evren_semaphore():
+    import threading
+
+    global _EVREN_SEM
+    with _EVREN_SEM_LOCK:
+        if _EVREN_SEM is None:
+            _EVREN_SEM = threading.BoundedSemaphore(max(1, settings.evren_max_concurrency))
+        return _EVREN_SEM
+
+
+class _OpenAICompatStructured(Generic[T]):
+    """Model zinciri: 429/5xx/zaman aşımı -> sıradaki model; 401/403 (anahtar/şart onayı) -> hemen LLMError."""
+
+    def __init__(self, base_url: str, api_key: str, schema: type[T], models: list[str], timeout: float,
+                 reasoning_effort: str | None = None, post=None, label: str = "EVREN", sleep=None,
+                 rate_retries: int = 2):
+        import time
+
+        import requests
+
+        self.base_url, self.api_key, self.schema = base_url.rstrip("/"), api_key, schema
+        self.models, self.timeout, self.effort, self.label = list(dict.fromkeys(models)), timeout, reasoning_effort, label
+        self.post = post or requests.post
+        self.sleep = sleep or time.sleep
+        self.rate_retries = rate_retries
+
+    def _send(self, body: dict):
+        with _evren_semaphore():
+            return self.post(f"{self.base_url}/chat/completions", json=body, timeout=self.timeout,
+                             headers={"Authorization": f"Bearer {self.api_key}"})
+
+    @staticmethod
+    def _extract_json(text: str) -> str:
+        t = (text or "").strip()
+        if t.startswith("```"):
+            t = t.split("\n", 1)[1] if "\n" in t else t
+            t = t.rsplit("```", 1)[0]
+        return t.strip()
+
+    def invoke(self, system: str, user: str) -> T:
+        from pydantic import ValidationError
+
+        last = "bilinmiyor"
+        for model in self.models:
+            body = {
+                "model": model,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                "response_format": {"type": "json_schema", "json_schema": {
+                    "name": self.schema.__name__, "schema": self.schema.model_json_schema(), "strict": True}},
+                "temperature": 0.2,
+                "max_tokens": 16000,
+            }
+            if self.effort:
+                body["reasoning_effort"] = self.effort
+            try:
+                r = self._send(body)
+                if r.status_code == 400 and "reasoning_effort" in body:  # model bu parametreyi desteklemiyor
+                    body.pop("reasoning_effort")
+                    r = self._send(body)
+                for attempt in range(self.rate_retries):  # 429: eşzamanlılık sınırı -> bekle, aynı modeli tekrar dene
+                    if r.status_code != 429:
+                        break
+                    wait = 5.0 * (attempt + 1)
+                    log.warning("%s %s 429 (yoğun), %.0f sn sonra tekrar", self.label, model, wait)
+                    self.sleep(wait)
+                    r = self._send(body)
+            except Exception as exc:  # zaman aşımı / bağlantı
+                last = f"{model}: {type(exc).__name__}"
+                log.warning("%s %s yanıt vermedi (%s), sıradaki model", self.label, model, type(exc).__name__)
+                continue
+            if r.status_code in (401, 403):
+                raise LLMError(f"{self.label} erişim reddedildi ({r.status_code}): {r.text[:200]}")
+            if r.status_code != 200:
+                last = f"{model}: HTTP {r.status_code} {r.text[:150]}"
+                log.warning("%s %s hata %s, sıradaki model", self.label, model, r.status_code)
+                continue
+            try:
+                data = r.json()
+                choice = data["choices"][0]
+                if choice.get("finish_reason") == "length":
+                    raise ValueError("çıktı uzunluk sınırında kesildi")
+                return self.schema.model_validate_json(self._extract_json(choice["message"].get("content") or ""))
+            except (ValidationError, ValueError, KeyError, IndexError, TypeError) as exc:
+                last = f"{model}: {type(exc).__name__}: {str(exc)[:150]}"
+                log.warning("%s %s şemaya uymayan çıktı (%s), sıradaki model", self.label, model, type(exc).__name__)
+                continue
+        raise LLMError(f"{self.label}: tüm modeller başarısız ({last})")
+
+
+class EvrenLLM:
+    def __init__(self, post=None, sleep=None):
+        if not settings.evren_api_key:
+            raise LLMError("EVREN_API_KEY .env içinde tanımlı değil")
+        self.post, self.sleep = post, sleep
+
+    def with_structured_output(self, schema: type[T], tier: Tier) -> _OpenAICompatStructured[T]:
+        fast = tier == "fast"
+        models = settings.evren_fast_models if fast else settings.evren_reasoning_models
+        return _OpenAICompatStructured(settings.evren_base_url, settings.evren_api_key, schema, models,
+                                       settings.evren_timeout_s, reasoning_effort="low" if fast else None,
+                                       post=self.post, sleep=self.sleep)
+
+
+_PROVIDER_COOLDOWN_S = 600
+_PROVIDER_DOWN_UNTIL: dict[str, float] = {}
+
+
+class _FallbackStructured:
+    """Sağlayıcıları sırayla dener. Tamamen başarısız olan sağlayıcı 10 dk atlanır (her çağrıda yeniden
+    dakikalarca zaman aşımı beklenmesin); hepsi bekleme süresindeyse yine de sırayla denenir."""
+
+    def __init__(self, runnables: list[tuple[str, object]], clock=None):
+        import time
+
+        self.runnables, self.clock = runnables, clock or time.time
+
+    def invoke(self, system: str, user: str):
+        now = self.clock()
+        fresh = [(n, r) for n, r in self.runnables if _PROVIDER_DOWN_UNTIL.get(n, 0) <= now]
+        order = fresh or self.runnables
+        errors_: list[str] = []
+        for name, rn in order:
+            try:
+                out = rn.invoke(system, user)
+                _PROVIDER_DOWN_UNTIL.pop(name, None)
+                return out
+            except LLMError as exc:
+                errors_.append(str(exc)[:160])
+                _PROVIDER_DOWN_UNTIL[name] = self.clock() + _PROVIDER_COOLDOWN_S
+                log.warning("%s başarısız, %d dk atlanacak; yedeğe geçiliyor: %s", name,
+                            _PROVIDER_COOLDOWN_S // 60, str(exc)[:160])
+        raise LLMError(" | ".join(errors_) or "sağlayıcı yok")
+
+
+class FallbackLLM:
+    """Sağlayıcı zinciri: birincisi tamamen başarısız olursa sıradakine geçer (ör. EVREN -> Gemini)."""
+
+    def __init__(self, providers: list):
+        self.providers = providers
+
+    def with_structured_output(self, schema: type[T], tier: Tier):
+        return _FallbackStructured([(f"{type(p).__name__}:{tier}", p.with_structured_output(schema, tier))
+                                    for p in self.providers])
+
+
 class RoutedLLM:
     """Katman bazında sağlayıcı seçimi (ör. analistler Gemini, tartışma/risk Claude)."""
 
@@ -243,16 +409,20 @@ class RoutedLLM:
 
 def _provider(name: str) -> LLM:
     if name == "auto":
-        name = "anthropic" if settings.anthropic_api_key else "gemini"
+        name = "anthropic" if settings.anthropic_api_key else "evren" if settings.evren_api_key else "gemini"
     if name == "anthropic":
         return ClaudeLLM()
     if name == "gemini":
-        return GeminiLLM()
+        # Gemini birincil, EVREN anahtarı varsa yedek
+        return FallbackLLM([GeminiLLM(), EvrenLLM()]) if settings.evren_api_key else GeminiLLM()
+    if name == "evren":
+        # EVREN birincil, Gemini anahtarı varsa yedek
+        return FallbackLLM([EvrenLLM(), GeminiLLM()]) if settings.gemini_api_key else EvrenLLM()
     raise LLMError(f"Bilinmeyen LLM sağlayıcısı: {name}")
 
 
 def get_llm() -> LLM:
-    """FAST_PROVIDER / REASONING_PROVIDER: auto | anthropic | gemini."""
+    """FAST_PROVIDER / REASONING_PROVIDER: auto | anthropic | evren | gemini."""
     fast, reasoning = settings.fast_provider, settings.reasoning_provider
     if fast == reasoning:
         return _provider(fast)

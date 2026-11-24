@@ -105,3 +105,51 @@ def test_fundamentals_sanity_filter():
     f = fundamental_data.get_fundamentals("THYAO", info_fetcher=lambda t: info, mcp_fetcher=lambda t: {})
     assert f["pb_ratio"] == VERI_YOK and f["ev_ebitda"] == VERI_YOK and f["pe_ratio"] == 5.0
     assert len(f["suspicious_values_removed"]) == 2
+
+
+# ---------- seans içi (yarım) mum ----------
+def _intraday_df(last_vol: float, prev_vol: float = 1000.0, n: int = 40):
+    from datetime import date
+    idx = pd.bdate_range(end=date(2026, 11, 24), periods=n)  # son mum: Salı 24.11.2026
+    vol = [1000.0] * (n - 2) + [prev_vol, last_vol]
+    close = [100.0 + i * 0.1 for i in range(n)]
+    return pd.DataFrame({"open": close, "high": [c + 1 for c in close], "low": [c - 1 for c in close],
+                         "close": close, "volume": vol}, index=idx)
+
+
+def _tr(h, m):
+    from datetime import datetime
+    return datetime(2026, 11, 24, h, m, tzinfo=market_data._TR)
+
+
+def test_session_progress():
+    from datetime import date
+    d = date(2026, 11, 24)
+    assert market_data.session_progress(d, _tr(9, 30)) == 0.0
+    assert market_data.session_progress(d, _tr(14, 0)) == pytest.approx(0.5)
+    assert market_data.session_progress(d, _tr(18, 15)) is None  # seans kapandı
+    assert market_data.session_progress(date(2026, 11, 23), _tr(14, 0)) is None  # dünkü mum tamam
+
+
+def test_early_session_uses_previous_full_day_volume():
+    # 10:30'da bugün 80 lot (ortalamanın %8'i) -> "katılım yok" demek yanlış; dünün hacmi (1500) kullanılır
+    ind = market_data.compute_indicators(_intraday_df(80.0, prev_vol=1500.0), now=_tr(10, 30))
+    assert ind["intraday_bar"] is True
+    assert ind["volume_basis"] == "onceki_tam_gun"
+    assert ind["volume_ratio"] == pytest.approx(1.5, abs=0.01)
+    assert ind["session_elapsed_pct"] == 6
+
+
+def test_midsession_volume_is_prorated():
+    # 14:00 = seansın yarısı; 600 lot / (1000 * 0.5) = 1.2
+    ind = market_data.compute_indicators(_intraday_df(600.0), now=_tr(14, 0))
+    assert ind["volume_basis"] == "seans_ici_orantili_tahmin"
+    assert ind["volume_ratio"] == pytest.approx(1.2, abs=0.01)
+
+
+def test_after_close_is_full_day():
+    ind = market_data.compute_indicators(_intraday_df(600.0), now=_tr(18, 30))
+    assert ind["intraday_bar"] is False
+    assert ind["volume_basis"] == "tam_gun"
+    assert ind["volume_ratio"] == pytest.approx(0.6, abs=0.01)
+    assert ind["session_elapsed_pct"] == VERI_YOK

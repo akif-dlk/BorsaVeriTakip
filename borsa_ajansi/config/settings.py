@@ -39,12 +39,23 @@ class Settings:
 
     gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     # Yalnızca ana anahtar hesap/kredi hatası (401/402/403) verdiğinde devreye girer
+    gemini_timeout_s: float = field(default_factory=lambda: float(os.getenv("GEMINI_TIMEOUT_S", "120")))
     gemini_api_key_backup: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY_BACKUP") or None)
     gemini_fast_models: list[str] = field(default_factory=lambda: _csv(
         "GEMINI_FAST_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.1-flash-lite-preview,gemini-2.5-flash-lite,gemini-3.6-flash"))
     gemini_reasoning_models: list[str] = field(default_factory=lambda: _csv(
         "GEMINI_REASONING_MODELS", "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-2.5-pro,gemini-2.5-flash"))
-    # auto: ANTHROPIC_API_KEY varsa Claude, yoksa Gemini
+    # EVREN (yerli, OpenAI uyumlu LLM ağ geçidi)
+    evren_api_key: str | None = field(default_factory=lambda: os.getenv("EVREN_API_KEY") or None)
+    evren_base_url: str = field(default_factory=lambda: os.getenv("EVREN_BASE_URL", "https://evren-llmapi.ssyz.org.tr/v1"))
+    evren_fast_models: list[str] = field(default_factory=lambda: _csv(
+        "EVREN_FAST_MODELS", "deepseek-v4.1-flash,qwen3.8-flash-next"))
+    evren_reasoning_models: list[str] = field(default_factory=lambda: _csv(
+        "EVREN_REASONING_MODELS", "glm-5.3,deepseek-v4.1-flash"))
+    evren_timeout_s: float = field(default_factory=lambda: float(os.getenv("EVREN_TIMEOUT_S", "150")))
+    # Aynı anda EVREN'e giden en fazla istek (fazlası 429 / kuyruk zaman aşımı üretiyor)
+    evren_max_concurrency: int = field(default_factory=lambda: int(os.getenv("EVREN_MAX_CONCURRENCY", "2")))
+    # auto: ANTHROPIC_API_KEY varsa Claude; yoksa EVREN (Gemini yedekli); yoksa Gemini
     fast_provider: str = field(default_factory=lambda: os.getenv("FAST_PROVIDER", "auto"))
     reasoning_provider: str = field(default_factory=lambda: os.getenv("REASONING_PROVIDER", "auto"))
 

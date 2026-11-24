@@ -72,6 +72,7 @@ async def test_sim_start_runs_cycle_and_buys(svc):
     await tasks[0]  # arka plan döngüsü
     sent = "\n".join(c.kwargs["text"] for c in ctx.bot.send_message.call_args_list)
     assert "ALIŞ AAA.IS" in sent and "Sanal Portföy" in sent
+    assert "AAA.IS analiz ediliyor (1/1)" in sent  # döngü sırasında ara bilgi gönderildi
     # ikinci başlatma reddedilir
     upd2 = _update(42)
     await bot.cmd_sim_baslat(upd2, _ctx(svc)[0])

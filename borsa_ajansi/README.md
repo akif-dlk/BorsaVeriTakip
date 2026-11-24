@@ -47,7 +47,11 @@ Otomatik (hafta içi): 10:30 işlem döngüsü, 18:30 stop/hedef kontrolü + gü
 - Süre dolunca tüm pozisyonlar kapanır ve BIST100'e karşı sonuç raporlanır.
 
 ## LLM sağlayıcıları
-- `ANTHROPIC_API_KEY` varsa Claude (Haiku 5.5 analist, Opus 5.5 tartışma/risk), yoksa Gemini.
+- `ANTHROPIC_API_KEY` varsa Claude (Haiku 5.5 analist, Opus 5.5 tartışma/risk); yoksa `EVREN_API_KEY` varsa EVREN, yoksa Gemini.
+- **EVREN** (yerli, OpenAI uyumlu ağ geçidi; kullanım şartları API'den bir kez onaylanmalı): tartışma/risk `glm-5.3`,
+  analist `deepseek-v4.1-flash`. Aynı anda en fazla `EVREN_MAX_CONCURRENCY` istek; 429'da bekleyip tekrar dener.
+- Önerilen hibrit: `FAST_PROVIDER=gemini` (EVREN yedek), `REASONING_PROVIDER=evren` (Gemini yedek). Tamamen
+  başarısız olan sağlayıcı 10 dk atlanır.
 - `FAST_PROVIDER` / `REASONING_PROVIDER` ile katman bazında karıştırılabilir.
 - Gemini: model yoğunsa (503) sıradaki modele geçer, günlük kotası biten modeli atlar; güçlü modellerin hepsi
   düşerse hızlı modellere iner. Kredi/hesap hatasında (402/401/403) `GEMINI_API_KEY_BACKUP` devreye girer.
