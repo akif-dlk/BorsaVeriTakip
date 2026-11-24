@@ -321,7 +321,7 @@ class PaperTrader:
         if slots <= 0:
             msgs.append("Maksimum pozisyon sayısına ulaşıldı, yeni alım yok.")
             return msgs
-        self.progress("🔍 BIST30 taranıyor (teknik puanlama)...")
+        self.progress("🔍 BIST100 taranıyor (teknik puanlama, LLM yok)...")
         candidates = self.screen_fn(exclude=held)
         line = "🔍 Tarama adayları: " + (", ".join(f"{c['ticker']}({c['score']})" for c in candidates) or "yok")
         msgs.append(line)

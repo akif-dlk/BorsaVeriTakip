@@ -153,3 +153,20 @@ def test_after_close_is_full_day():
     assert ind["volume_basis"] == "tam_gun"
     assert ind["volume_ratio"] == pytest.approx(0.6, abs=0.01)
     assert ind["session_elapsed_pct"] == VERI_YOK
+
+
+# ---------- tarama: BIST100 + sığ hisse filtresi ----------
+def test_universe_defaults_to_bist100():
+    from tools import screener
+    u = screener.universe()
+    assert len(u) >= 100 and "THYAO.IS" in u and "TRALT.IS" in u
+    assert len(u) == len(set(u))
+
+
+def test_screen_drops_illiquid_names(ohlcv):
+    from tools import screener
+    thin = ohlcv.copy()
+    thin["volume"] = 1.0  # ~100 TL/gün işlem hacmi
+    data = {"XU100.IS": ohlcv, "LIQ.IS": ohlcv, "THIN.IS": thin}
+    rows = screener.screen(["LIQ.IS", "THIN.IS"], top_n=5, fetcher=lambda t, p: data[t])
+    assert [r["ticker"] for r in rows] == ["LIQ.IS"]

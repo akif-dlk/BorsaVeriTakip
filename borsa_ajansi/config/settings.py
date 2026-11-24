@@ -68,7 +68,9 @@ class Settings:
     timezone: str = field(default_factory=lambda: os.getenv("TIMEZONE", "Europe/Istanbul"))
 
     # ---- Sanal portföy simülasyonu (gerçek para yok) ----
-    universe: list[str] = field(default_factory=lambda: _csv("UNIVERSE", ""))  # boş -> BIST30
+    universe: list[str] = field(default_factory=lambda: _csv("UNIVERSE", ""))  # boş -> BIST100
+    # Taramada elenecek sığ hisse eşiği: 20 günlük ort. işlem hacmi (milyon TL); 0 = filtre yok
+    screen_min_turnover_mtl: float = field(default_factory=lambda: float(os.getenv("SCREEN_MIN_TURNOVER_MTL", "50")))
     sim_initial_cash: float = field(default_factory=lambda: float(os.getenv("SIM_INITIAL_CASH", "10000")))
     sim_days: int = field(default_factory=lambda: int(os.getenv("SIM_DAYS", "14")))  # takvim günü
     sim_candidates: int = field(default_factory=lambda: int(os.getenv("SIM_CANDIDATES", "3")))  # LLM'e giden aday/gün

@@ -9,7 +9,7 @@ küresel bağlam (BIST100/30, banka, USD/TRY, Brent, altın, S&P, Nasdaq, DAX, V
    → 2. Kademe Boğa/Ayı tartışması (güçlü model, dayanaksız argüman elenir)
    → 3. Kademe Risk kapısı (güven < %70 / teknik-temel çelişkisi / R/Ö < 1.5 → BEKLE)
    → SQLite kayıt + 5/10 işlem günü performans kıyası
-   → Sanal portföy: BIST30 taraması → analiz → simüle AL/SAT, stop/hedef takibi
+   → Sanal portföy: BIST100 taraması (sığ hisseler elenir) → analiz → simüle AL/SAT, stop/hedef takibi
 ```
 
 ## Kurulum (Windows)
