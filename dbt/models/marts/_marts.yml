@@ -156,3 +156,73 @@ models:
         data_tests: [not_null]
       - name: loaded_at
         data_tests: [not_null]
+
+  - name: mart_indicators
+    description: >
+      Teknik göstergeler; tanecik fact_daily_prices ile aynı (enstrüman × işlem günü). Her enstrüman kendi işlem
+      günleri üzerinde, adj_close ile hesaplanır (tatil/eksik gün atlanır, ileri doldurma yok). Pencere dolmadan
+      gösterge NULL'dır. Tanımlar src/bvt/indicators.py başvuru uygulamasıyla aynıdır.
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [instrument_key, date_key]
+    columns:
+      - name: instrument_key
+        description: dim_instrument'e yabancı anahtar.
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_instrument'), field: instrument_key}
+      - name: date_key
+        description: dim_date'e yabancı anahtar.
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_date'), field: date_key}
+      - name: instrument_code
+        data_tests: [not_null]
+      - name: price_date
+        data_tests: [not_null]
+      - name: asset_class
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['fx', 'stock', 'index', 'gold']}
+      - name: obs_index
+        description: Enstrümanın 1'den başlayan işlem günü sırası (ısınma dönemini ayırt etmek için).
+        data_tests:
+          - not_null
+          - accepted_range: {min_value: 1}
+      - name: adj_close
+        description: Göstergelerin hesaplandığı düzeltilmiş kapanış.
+        data_tests: [not_null]
+      - name: log_return
+        description: ln(adj_close / önceki işlem günü adj_close); ilk gün NULL.
+      - name: sma_20
+        description: 20 işlem günlük basit hareketli ortalama.
+        data_tests:
+          - accepted_range: {min_value: 0}
+      - name: sma_50
+        description: 50 işlem günlük basit hareketli ortalama.
+        data_tests:
+          - accepted_range: {min_value: 0}
+      - name: sma_200
+        description: 200 işlem günlük basit hareketli ortalama.
+        data_tests:
+          - accepted_range: {min_value: 0}
+      - name: ema_12
+        description: 12 günlük üstel hareketli ortalama (α = 2/13, ilk kapanışla tohumlanır).
+        data_tests:
+          - accepted_range: {min_value: 0}
+      - name: ema_26
+        description: 26 günlük üstel hareketli ortalama (α = 2/27, ilk kapanışla tohumlanır).
+        data_tests:
+          - accepted_range: {min_value: 0}
+      - name: rsi_14
+        description: Wilder RSI(14); 15. işlem gününden itibaren dolu.
+        data_tests:
+          - accepted_range: {min_value: 0, max_value: 100}
+      - name: rsi_zone
+        description: overbought (RSI ≥ 70), oversold (RSI ≤ 30), neutral; RSI yoksa NULL.
+        data_tests:
+          - accepted_values: {values: ['overbought', 'oversold', 'neutral']}
+      - name: volatility_20d
+        description: Son 20 log getirinin örneklem std'si × √252 (yıllıklandırılmış, oran; 0.25 = %25).
+        data_tests:
+          - accepted_range: {min_value: 0}

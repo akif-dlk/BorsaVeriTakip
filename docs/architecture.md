@@ -74,8 +74,15 @@ flowchart LR
   ile görünür (uyarı testi). `dim_date` ilk fiyat gününden bugüne kesintisiz takvimdir; tatiller veriden çıkarılır
   (`is_bist_holiday`: hafta içi, son BIST gününden eski ve BIST verisi yok), `has_fx/bist/gold_data` bayrakları
   serilerin takvime hizalanmasında (Gün 10-11) kullanılır.
-- **Testler:** not_null, accepted_values ve bağımlılıksız `unique_combination_of_columns` generic testi
-  (doğal anahtar). `dbt deps` gerekmez; ağsız ortamda da çalışır.
+- **Göstergeler (`mart_indicators`, tablo):** tanecik `fact_daily_prices` ile aynı. SMA(20/50/200) pencere
+  fonksiyonuyla; EMA(12/26, ilk kapanışla tohumlanır) ve Wilder RSI(14) önceki değere bağlı olduğundan özyineli
+  CTE ile (fiyatlar enstrüman başına diziye alınır, her adım ~13 satır işler); volatilite = son 20 log getirinin
+  örneklem std'si × √252. Seriler enstrümanın kendi işlem günleridir (tatil/eksik gün atlanır, ileri doldurma
+  yok); pencere dolmadan NULL. Aynı tanımlar `bvt.indicators`'ta (pandas) başvuru uygulaması olarak tutulur;
+  PostgreSQL testi ikisini karşılaştırır, birim testi SQL'deki pencere ayarlarının Python sabitleriyle aynı
+  olduğunu denetler.
+- **Testler:** not_null, accepted_values, bağımlılıksız `unique_combination_of_columns` (doğal anahtar) ve
+  `accepted_range` (ör. RSI 0-100, SMA/volatilite ≥ 0; NULL'lar hariç) generic testleri. `dbt deps` gerekmez; ağsız ortamda da çalışır.
 - **Çalıştırma:** dbt ayrı sanal ortamda (`/opt/dbt-venv`, `requirements-dbt.txt`); `bvt.dbt_runner` alt süreç
   olarak çağırır, çıktıyı satır satır loglar, hata/süre aşımında görevi düşürür. Proje konteynere salt-okunur
   bağlanır; `target/` ve loglar `DBT_TARGET_PATH` / `DBT_LOG_PATH` ile `/tmp/dbt` altına yazılır.

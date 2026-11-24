@@ -116,6 +116,19 @@ kaynak) → `dim_instrument` (seed `dbt/seeds/instrument_metadata.csv` + veri ka
 takvim, veriden çıkarılan BIST tatilleri). Anahtarlar kararlıdır (`md5(instrument_code)`, `YYYYMMDD`); olgu
 tanecik tekilliği ve boyutlara referans bütünlüğü (relationships) test edilir.
 
+`marts.mart_indicators` aynı taneciğe (enstrüman × işlem günü) teknik göstergeleri ekler: SMA(20/50/200),
+EMA(12/26), Wilder RSI(14) ve bölgesi (`overbought`/`oversold`/`neutral`), 20 günlük yıllıklandırılmış volatilite
+ve günlük log getiri. Her enstrüman kendi işlem günleri üzerinde `adj_close` ile hesaplanır; pencere dolmadan
+gösterge NULL'dır. Tanımların Python karşılığı `src/bvt/indicators.py`'dedir; `tests/test_mart_indicators_pg.py`
+(`BVT_TEST_PG=1`) SQL ile Python sonuçlarını aynı veri üzerinde karşılaştırır.
+
+```sql
+select price_date, adj_close, sma_50, sma_200, rsi_14, rsi_zone, volatility_20d
+from marts.mart_indicators
+where instrument_code = 'THYAO' and sma_200 is not null
+order by price_date desc limit 10;
+```
+
 ```sql
 select d.year, d.month, i.instrument_name, avg(f.adj_close) as ortalama
 from marts.fact_daily_prices f
@@ -135,7 +148,7 @@ python -m venv .venv-dbt && .venv-dbt/bin/pip install -r requirements-dbt.txt   
 export DBT_BIN=.venv-dbt/bin/dbt                                                 # PATH'te dbt varsa gerekmez
 PYTHONPATH=src python -m bvt.dbt_runner debug                                    # bağlantı kontrolü
 PYTHONPATH=src python -m bvt.dbt_runner build --select source:raw staging        # görünümler + testler
-PYTHONPATH=src python -m bvt.dbt_runner build --select instrument_metadata marts  # seed + dim_*/fact_*
+PYTHONPATH=src python -m bvt.dbt_runner build --select instrument_metadata marts  # seed + dim_*/fact_*/mart_*
 PYTHONPATH=src python -m bvt.dbt_runner source freshness                         # raw tazelik raporu
 docker compose exec airflow-scheduler python -m bvt.dbt_runner build             # konteyner içinde
 ```
@@ -151,9 +164,9 @@ docker compose exec airflow-scheduler python -m bvt.dbt_runner build            
 ```
 ├── docker-compose.yml   # servisler: PostgreSQL, Airflow (webserver, scheduler, init, metadata DB)
 ├── airflow/             # Dockerfile (Airflow + proje bağımlılıkları + ayrı dbt ortamı), dags/
-├── dbt/                 # dbt projesi: models/staging (stg_*), models/marts (dim_*, fact_*), seeds, makrolar, testler
+├── dbt/                 # dbt projesi: models/staging (stg_*), models/marts (dim_*, fact_*, mart_*), seeds, makrolar, testler
 ├── sql/init/            # ilk açılışta çalışan şema betikleri
-├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry, dbt_runner
+├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry, dbt_runner, indicators
 ├── docs/                # mimari, kaynaklar, yol haritası
 └── tests/
 ```

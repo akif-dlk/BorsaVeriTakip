@@ -18,7 +18,7 @@ SEED = DBT / "seeds" / "instrument_metadata.csv"
 CONTRACT = ["instrument_code", "asset_class", "price_date", "source", "currency", "open", "high", "low", "close",
             "adj_close", "volume", "is_primary_source", "inserted_at", "loaded_at", "has_valid_ohlc"]
 STAGING_MODELS = ["stg_fx_rates", "stg_gold_prices", "stg_stock_prices"]
-MART_MODELS = ["dim_date", "dim_instrument", "fact_daily_prices"]
+MART_MODELS = ["dim_date", "dim_instrument", "fact_daily_prices", "mart_indicators"]
 
 
 def load(path: Path) -> dict:
@@ -77,6 +77,7 @@ def test_source_has_freshness_on_fetched_at():
 def test_generic_test_and_macros_exist():
     generic = (DBT / "tests" / "generic" / "unique_combination_of_columns.sql").read_text(encoding="utf-8")
     assert "{% test unique_combination_of_columns" in generic
+    assert "{% test accepted_range" in (DBT / "tests" / "generic" / "accepted_range.sql").read_text(encoding="utf-8")
     assert "macro generate_schema_name" in (DBT / "macros" / "generate_schema_name.sql").read_text(encoding="utf-8")
     assert "macro ohlc_is_valid" in (DBT / "macros" / "ohlc_is_valid.sql").read_text(encoding="utf-8")
 
@@ -101,8 +102,8 @@ def _output_columns(sql: str) -> set[str]:
     names = set()
     for line in select_list.splitlines():
         line = line.split("--", 1)[0].strip().rstrip(",")
-        alias = re.search(r"\bas\s+([a-z_]+)$", line)
-        bare = re.fullmatch(r"(?:[a-z_]+\.)?([a-z_]+)", line)
+        alias = re.search(r"\bas\s+([a-z_][a-z0-9_]*)$", line)
+        bare = re.fullmatch(r"(?:[a-z_]+\.)?([a-z_][a-z0-9_]*)", line)
         if alias or bare:
             names.add((alias or bare).group(1))
     return names
@@ -162,3 +163,27 @@ def test_seed_schema_is_documented():
 def test_surrogate_key_macro_exists():
     macro = (DBT / "macros" / "surrogate_key.sql").read_text(encoding="utf-8")
     assert "macro surrogate_key" in macro and "md5(" in macro
+
+
+def test_mart_indicators_matches_python_reference_definitions():
+    """SQL'deki pencere/periyot ayarları ve çıktı sütunları bvt.indicators ile aynı olmalı."""
+    from bvt import indicators as ind
+
+    sql = (MARTS / "mart_indicators.sql").read_text(encoding="utf-8")
+    settings = dict(re.findall(r"{%-? set (\w+) = (.+?) %}", sql))
+    assert settings == {"sma_windows": str(list(ind.SMA_WINDOWS)), "ema_spans": str(list(ind.EMA_SPANS)),
+                        "rsi_window": str(ind.RSI_WINDOW), "vol_window": str(ind.VOLATILITY_WINDOW),
+                        "trading_days": str(ind.TRADING_DAYS_PER_YEAR)}
+    assert set(ind.INDICATOR_COLUMNS) | {"rsi_zone", "obs_index"} <= _output_columns(sql)
+    assert f">= {ind.RSI_OVERBOUGHT} then 'overbought'" in sql and f"<= {ind.RSI_OVERSOLD} then 'oversold'" in sql
+    assert "ref('fact_daily_prices')" in sql  # göstergeler star schema olgusundan (birincil kaynak) türetilir
+
+
+def test_mart_indicators_grain_and_ranges_are_tested():
+    model = next(m for m in load(MARTS / "_marts.yml")["models"] if m["name"] == "mart_indicators")
+    grain = model["data_tests"][0]["unique_combination_of_columns"]["combination_of_columns"]
+    assert grain == ["instrument_key", "date_key"]
+    rsi = next(c for c in model["columns"] if c["name"] == "rsi_14")
+    assert {"accepted_range": {"min_value": 0, "max_value": 100}} in rsi["data_tests"]
+    for col in ("sma_20", "sma_50", "sma_200", "ema_12", "ema_26", "volatility_20d"):
+        assert "accepted_range" in _column_tests(model, col), col
