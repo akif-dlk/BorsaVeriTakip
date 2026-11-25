@@ -33,7 +33,8 @@ DEFAULT_DBT_DIR = Path(__file__).resolve().parents[2] / "dbt"
 # Staging katmanı: raw kaynak testleri + stg_* görünümleri ve testleri
 STAGING_SELECT = ("source:raw", "staging")
 # Marts katmanı: enstrüman tanımları (seed) + star schema (dim_instrument, dim_date, fact_daily_prices),
-# göstergeler (mart_indicators) ve testleri.
+# göstergeler (mart_indicators), getiriler/özetler/korelasyonlar (mart_returns, mart_period_returns,
+# mart_correlations) ve testleri.
 # Staging'e bağımlıdır ama onu yeniden kurmaz; günlük DAG'de staging görevinden sonra çalışır.
 MARTS_SELECT = ("instrument_metadata", "marts")
 TAIL_LINES = 30

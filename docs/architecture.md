@@ -81,6 +81,14 @@ flowchart LR
   yok); pencere dolmadan NULL. Aynı tanımlar `bvt.indicators`'ta (pandas) başvuru uygulaması olarak tutulur;
   PostgreSQL testi ikisini karşılaştırır, birim testi SQL'deki pencere ayarlarının Python sabitleriyle aynı
   olduğunu denetler.
+- **Getiriler ve korelasyonlar (tablo):** `mart_returns` (tanecik `fact_daily_prices` ile aynı; basit/log/birikimli
+  getiri, `days_since_prev`) → `mart_period_returns` (enstrüman × dönem tipi × dönem başı; ISO hafta ve takvim
+  ayı, getiri bir önceki verisi olan dönemin son kapanışına göre, dönem içi volatilite, `is_complete` = dönemin
+  takvim sonu bugünden önce) ve `mart_correlations` (çift × ortak gün; `instrument_a < instrument_b collate "C"`,
+  her çift bir kez; iki tarafın da getirisi olan ortak günlerde 60/252 gözlemlik `corr()` pencere fonksiyonu,
+  pencere dolmadan NULL, [-1, 1]'e kırpılır). Takvimler farklı olduğundan (BIST tatili, ABD vadeli altın) tatil
+  sonrası getiri birden fazla günü kapsayabilir; ileri doldurma yapılmaz. Başvuru uygulaması `bvt.returns`
+  (`correlation_matrix()` ısı haritası/API için simetrik matris üretir).
 - **Testler:** not_null, accepted_values, bağımlılıksız `unique_combination_of_columns` (doğal anahtar) ve
   `accepted_range` (ör. RSI 0-100, SMA/volatilite ≥ 0; NULL'lar hariç) generic testleri. `dbt deps` gerekmez; ağsız ortamda da çalışır.
 - **Çalıştırma:** dbt ayrı sanal ortamda (`/opt/dbt-venv`, `requirements-dbt.txt`); `bvt.dbt_runner` alt süreç

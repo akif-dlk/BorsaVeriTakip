@@ -11,7 +11,7 @@ Döviz (USD/TRY, EUR/TRY), BIST (8 hisse + XU100) ve altını (ons + gram) her i
   Ardından `check_gaps` (çekimler başarısız olsa da çalışır) son 30 günün boşluk raporunu `ops.data_gaps`'e yazar.
   Paralelinde `dbt_build_staging` raw kaynak testlerini ve `staging.stg_*` görünümlerini (dbt) kurar/test eder;
   başarılı olursa `dbt_build_marts` star schema'yı (`marts.dim_instrument`, `dim_date`, `fact_daily_prices`) ve
-  göstergeleri (`marts.mart_indicators`) kurar.
+  türetilmiş tabloları (`marts.mart_indicators`, `mart_returns`, `mart_period_returns`, `mart_correlations`) kurar.
 - **Retry:** iki katman. Çekici içinde HTTP isteği üstel bekleme ile 4 kez denenir (hız sınırında en az 30 sn);
   o da tükenirse Airflow görevi 5, 10 dk... (üst sınır 30 dk) arayla 2 kez daha dener.
 - İş mantığı `bvt.pipeline` / `bvt.fetch_*` modüllerindedir; bu dosya yalnızca orkestrasyonu tanımlar.

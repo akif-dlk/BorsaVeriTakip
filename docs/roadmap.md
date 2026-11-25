@@ -13,7 +13,7 @@
 - [x] Gün 8: dbt kurulumu, `stg_*` modelleri
 - [x] Gün 9: `dim_instrument`, `dim_date`, `fact_daily_prices`
 - [x] Gün 10: SMA, EMA, RSI, volatilite → `mart_indicators`
-- [ ] Gün 11: Getiriler, haftalık/aylık özet → `mart_correlations`
+- [x] Gün 11: Getiriler, haftalık/aylık özet → `mart_correlations`
 - [ ] Gün 12: dbt testleri, anormal fiyat tespiti
 - [ ] Gün 13: Telegram/e-posta alarmı
 - [ ] Gün 14: Refactor, birim testleri

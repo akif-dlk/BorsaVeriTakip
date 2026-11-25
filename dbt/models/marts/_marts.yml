@@ -226,3 +226,186 @@ models:
         description: Son 20 log getirinin örneklem std'si × √252 (yıllıklandırılmış, oran; 0.25 = %25).
         data_tests:
           - accepted_range: {min_value: 0}
+
+  - name: mart_returns
+    description: >
+      Günlük getiriler; tanecik fact_daily_prices ile aynı (enstrüman × işlem günü). Her enstrüman kendi işlem
+      günleri üzerinde, adj_close ile hesaplanır; önceki gün tatil/eksikse getiri aradaki günleri de kapsar.
+      Tanımlar src/bvt/returns.py (daily_returns) ile aynıdır.
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [instrument_key, date_key]
+    columns:
+      - name: instrument_key
+        description: dim_instrument'e yabancı anahtar.
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_instrument'), field: instrument_key}
+      - name: date_key
+        description: dim_date'e yabancı anahtar.
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_date'), field: date_key}
+      - name: instrument_code
+        data_tests: [not_null]
+      - name: price_date
+        data_tests: [not_null]
+      - name: asset_class
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['fx', 'stock', 'index', 'gold']}
+      - name: obs_index
+        description: Enstrümanın 1'den başlayan işlem günü sırası.
+        data_tests:
+          - not_null
+          - accepted_range: {min_value: 1}
+      - name: adj_close
+        description: Getirinin hesaplandığı düzeltilmiş kapanış.
+        data_tests: [not_null]
+      - name: volume
+        description: İşlem hacmi (hisseler); döviz, altın ve endekste NULL.
+      - name: prev_price_date
+        description: Enstrümanın bir önceki işlem günü; ilk gün NULL.
+      - name: days_since_prev
+        description: Önceki işlem gününden bu yana geçen takvim günü (hafta sonu sonrası 3, tatil sonrası daha fazla).
+        data_tests:
+          - accepted_range: {min_value: 1}
+      - name: simple_return
+        description: adj_close / önceki adj_close - 1 (oran; 0.02 = %2). İlk gün veya fiyat ≤ 0 ise NULL.
+        data_tests:
+          - accepted_range: {min_value: -1}
+      - name: log_return
+        description: ln(adj_close / önceki adj_close); mart_indicators.log_return ile aynı.
+      - name: cumulative_return
+        description: adj_close / enstrümanın ilk adj_close'u - 1.
+        data_tests:
+          - accepted_range: {min_value: -1}
+
+  - name: mart_period_returns
+    description: >
+      Haftalık (ISO, pazartesi başlar) ve aylık özet; tanecik enstrüman × dönem tipi × dönem başı (yalnızca verisi
+      olan dönemler). Dönem getirisi bir önceki verisi olan dönemin son kapanışına göredir. Tanımlar
+      src/bvt/returns.py (period_summary) ile aynıdır.
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [instrument_key, period_type, period_start_date]
+    columns:
+      - name: instrument_key
+        description: dim_instrument'e yabancı anahtar.
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_instrument'), field: instrument_key}
+      - name: instrument_code
+        data_tests: [not_null]
+      - name: asset_class
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['fx', 'stock', 'index', 'gold']}
+      - name: period_type
+        description: week veya month.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['week', 'month']}
+      - name: period_start_date
+        description: Dönemin ilk takvim günü (pazartesi / ayın 1'i).
+        data_tests: [not_null]
+      - name: period_end_date
+        description: Dönemin son takvim günü (pazar / ayın son günü).
+        data_tests: [not_null]
+      - name: first_trading_date
+        description: Dönemdeki ilk işlem günü.
+        data_tests: [not_null]
+      - name: last_trading_date
+        description: Dönemdeki son işlem günü.
+        data_tests: [not_null]
+      - name: n_trading_days
+        description: Dönemdeki işlem günü sayısı.
+        data_tests:
+          - not_null
+          - accepted_range: {min_value: 1, max_value: 31}
+      - name: first_close
+        description: Dönemin ilk işlem günü adj_close.
+        data_tests: [not_null]
+      - name: last_close
+        description: Dönemin son işlem günü adj_close.
+        data_tests: [not_null]
+      - name: max_close
+        description: Dönem içindeki en yüksek adj_close.
+        data_tests: [not_null]
+      - name: min_close
+        description: Dönem içindeki en düşük adj_close.
+        data_tests: [not_null]
+      - name: prev_period_close
+        description: Bir önceki (verisi olan) dönemin son kapanışı; ilk dönemde NULL.
+      - name: period_return
+        description: last_close / prev_period_close - 1 (oran).
+        data_tests:
+          - accepted_range: {min_value: -1}
+      - name: period_log_return
+        description: ln(last_close / prev_period_close).
+      - name: volatility
+        description: Dönem içi günlük log getirilerin örneklem std'si × √252 (en az 2 getiri; yoksa NULL).
+        data_tests:
+          - accepted_range: {min_value: 0}
+      - name: total_volume
+        description: Dönem toplam işlem hacmi (hisseler); diğerlerinde NULL.
+        data_tests:
+          - accepted_range: {min_value: 0}
+      - name: is_complete
+        description: Dönemin takvim sonu bugünden (İstanbul) önce mi; false ise dönem sürüyor, değerler değişebilir.
+        data_tests: [not_null]
+
+  - name: mart_correlations
+    description: >
+      Enstrüman çiftleri arasında günlük log getirilerin hareketli Pearson korelasyonu (60 ve 252 ortak işlem
+      günü). Tanecik çift (instrument_a < instrument_b, her çift bir kez) × ortak gün; pencere dolmadan NULL.
+      Tanımlar src/bvt/returns.py (rolling_correlations) ile aynıdır; correlation_matrix() son değerlerden
+      simetrik matris üretir.
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [instrument_a_key, instrument_b_key, date_key]
+    columns:
+      - name: instrument_a_key
+        description: Çiftin ilk enstrümanı (dim_instrument).
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_instrument'), field: instrument_key}
+      - name: instrument_b_key
+        description: Çiftin ikinci enstrümanı (dim_instrument).
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_instrument'), field: instrument_key}
+      - name: instrument_a
+        description: İlk enstrüman kodu (bayt sırasında küçük olan).
+        data_tests: [not_null]
+      - name: instrument_b
+        description: İkinci enstrüman kodu.
+        data_tests: [not_null]
+      - name: asset_class_a
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['fx', 'stock', 'index', 'gold']}
+      - name: asset_class_b
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['fx', 'stock', 'index', 'gold']}
+      - name: date_key
+        description: dim_date'e yabancı anahtar (ortak işlem günü).
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_date'), field: date_key}
+      - name: price_date
+        data_tests: [not_null]
+      - name: pair_obs_index
+        description: Çiftin 1'den başlayan ortak gözlem sırası (pencerenin dolduğunu ayırt etmek için).
+        data_tests:
+          - not_null
+          - accepted_range: {min_value: 1}
+      - name: corr_60d
+        description: Son 60 ortak gözlemin korelasyonu (≈ çeyrek).
+        data_tests:
+          - accepted_range: {min_value: -1, max_value: 1}
+      - name: corr_252d
+        description: Son 252 ortak gözlemin korelasyonu (≈ yıl).
+        data_tests:
+          - accepted_range: {min_value: -1, max_value: 1}

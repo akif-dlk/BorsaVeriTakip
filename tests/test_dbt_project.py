@@ -18,7 +18,8 @@ SEED = DBT / "seeds" / "instrument_metadata.csv"
 CONTRACT = ["instrument_code", "asset_class", "price_date", "source", "currency", "open", "high", "low", "close",
             "adj_close", "volume", "is_primary_source", "inserted_at", "loaded_at", "has_valid_ohlc"]
 STAGING_MODELS = ["stg_fx_rates", "stg_gold_prices", "stg_stock_prices"]
-MART_MODELS = ["dim_date", "dim_instrument", "fact_daily_prices", "mart_indicators"]
+MART_MODELS = ["dim_date", "dim_instrument", "fact_daily_prices", "mart_correlations", "mart_indicators",
+               "mart_period_returns", "mart_returns"]
 
 
 def load(path: Path) -> dict:
@@ -187,3 +188,51 @@ def test_mart_indicators_grain_and_ranges_are_tested():
     assert {"accepted_range": {"min_value": 0, "max_value": 100}} in rsi["data_tests"]
     for col in ("sma_20", "sma_50", "sma_200", "ema_12", "ema_26", "volatility_20d"):
         assert "accepted_range" in _column_tests(model, col), col
+
+
+def _model(name: str) -> dict:
+    return next(m for m in load(MARTS / "_marts.yml")["models"] if m["name"] == name)
+
+
+def test_return_marts_match_python_reference_definitions():
+    """Getiri/korelasyon modellerindeki ayarlar ve çıktı sütunları bvt.returns ile aynı olmalı."""
+    from bvt import indicators as ind
+    from bvt import returns as rt
+
+    returns_sql = (MARTS / "mart_returns.sql").read_text(encoding="utf-8")
+    assert "ref('fact_daily_prices')" in returns_sql
+    assert set(rt.RETURN_COLUMNS) <= _output_columns(returns_sql)
+
+    periods_sql = (MARTS / "mart_period_returns.sql").read_text(encoding="utf-8")
+    settings = dict(re.findall(r"{%-? set (\w+) = (.+?) %}", periods_sql))
+    assert settings == {"periods": str(list(rt.PERIOD_TYPES)), "trading_days": str(ind.TRADING_DAYS_PER_YEAR)}
+    assert set(rt.PERIOD_COLUMNS) <= _output_columns(periods_sql)
+
+    corr_sql = (MARTS / "mart_correlations.sql").read_text(encoding="utf-8")
+    settings = dict(re.findall(r"{%-? set (\w+) = (.+?) %}", corr_sql))
+    assert settings == {"windows": str(list(rt.CORRELATION_WINDOWS))}
+    assert {"instrument_a", "instrument_b", "price_date", "pair_obs_index"} <= _output_columns(corr_sql)
+    assert 'collate "C"' in corr_sql  # çift sırası Python'daki sorted() ile aynı (yerel ayardan bağımsız)
+    for model in ("mart_period_returns", "mart_correlations"):
+        assert "ref('mart_returns')" in (MARTS / f"{model}.sql").read_text(encoding="utf-8"), model
+    documented = {c["name"] for c in _model("mart_correlations")["columns"]}
+    assert {f"corr_{n}d" for n in rt.CORRELATION_WINDOWS} <= documented
+
+
+def test_return_marts_grain_and_ranges_are_tested():
+    grains = {
+        "mart_returns": ["instrument_key", "date_key"],
+        "mart_period_returns": ["instrument_key", "period_type", "period_start_date"],
+        "mart_correlations": ["instrument_a_key", "instrument_b_key", "date_key"],
+    }
+    for name, grain in grains.items():
+        model = _model(name)
+        assert model["data_tests"][0]["unique_combination_of_columns"]["combination_of_columns"] == grain, name
+    corr = _model("mart_correlations")
+    for col in ("corr_60d", "corr_252d"):
+        assert {"accepted_range": {"min_value": -1, "max_value": 1}} in next(
+            c for c in corr["columns"] if c["name"] == col)["data_tests"], col
+    for key in ("instrument_a_key", "instrument_b_key"):
+        assert "relationships" in _column_tests(corr, key), key
+    assert "accepted_values" in _column_tests(_model("mart_period_returns"), "period_type")
+    assert "accepted_range" in _column_tests(_model("mart_returns"), "simple_return")

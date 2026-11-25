@@ -122,6 +122,29 @@ ve günlük log getiri. Her enstrüman kendi işlem günleri üzerinde `adj_clos
 gösterge NULL'dır. Tanımların Python karşılığı `src/bvt/indicators.py`'dedir; `tests/test_mart_indicators_pg.py`
 (`BVT_TEST_PG=1`) SQL ile Python sonuçlarını aynı veri üzerinde karşılaştırır.
 
+Getiri ve korelasyon katmanı (`src/bvt/returns.py` başvuru uygulaması, `tests/test_mart_correlations_pg.py`):
+
+- `marts.mart_returns` — enstrüman × işlem günü: basit, log ve birikimli getiri; `days_since_prev` (tatil sonrası
+  getirinin kaç takvim gününü kapsadığı).
+- `marts.mart_period_returns` — haftalık (ISO, pazartesi) ve aylık özet: ilk/son/en yüksek/en düşük kapanış,
+  önceki döneme göre getiri, dönem içi yıllıklandırılmış volatilite, toplam hacim, `is_complete`.
+- `marts.mart_correlations` — her enstrüman çifti (a < b, tek yön) için ortak işlem günlerinde günlük log
+  getirilerin 60 ve 252 günlük hareketli Pearson korelasyonu (altın-dolar-BIST dahil).
+
+```sql
+-- Son gün altın / dolar / BIST100 korelasyonları
+select instrument_a, instrument_b, corr_60d, corr_252d
+from marts.mart_correlations
+where price_date = (select max(price_date) from marts.mart_correlations)
+  and instrument_a in ('USDTRY', 'XAUTRY_GRAM', 'XU100') and instrument_b in ('USDTRY', 'XAUTRY_GRAM', 'XU100');
+
+-- Aylık getiriler
+select instrument_code, period_start_date, period_return, volatility, is_complete
+from marts.mart_period_returns
+where period_type = 'month' and instrument_code = 'XU100'
+order by period_start_date desc limit 12;
+```
+
 ```sql
 select price_date, adj_close, sma_50, sma_200, rsi_14, rsi_zone, volatility_20d
 from marts.mart_indicators
@@ -166,7 +189,7 @@ docker compose exec airflow-scheduler python -m bvt.dbt_runner build            
 ├── airflow/             # Dockerfile (Airflow + proje bağımlılıkları + ayrı dbt ortamı), dags/
 ├── dbt/                 # dbt projesi: models/staging (stg_*), models/marts (dim_*, fact_*, mart_*), seeds, makrolar, testler
 ├── sql/init/            # ilk açılışta çalışan şema betikleri
-├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry, dbt_runner, indicators
+├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry, dbt_runner, indicators, returns
 ├── docs/                # mimari, kaynaklar, yol haritası
 └── tests/
 ```
