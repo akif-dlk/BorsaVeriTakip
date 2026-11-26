@@ -28,6 +28,28 @@ def _int_list(name: str) -> list[int]:
     return out
 
 
+def _tiers(name: str, default: str) -> list[tuple[float, float, float]]:
+    """'50:0.65:1.3,25:0.68:1.4,25:0.70:1.5' -> [(kümülatif_oran, min_güven, min_RÖ), ...] (0.50, 0.75, 1.00).
+
+    Anlamı: portföyün ilk %50'si gevşek eşikle, sonraki %25'i daha sıkı, kalanı en sıkı eşikle yatırılabilir.
+    """
+    out, cum = [], 0.0
+    for part in _csv(name, default):
+        try:
+            pct, conf, rr = (float(x) for x in part.split(":"))
+        except ValueError:
+            continue
+        cum = min(1.0, cum + pct / 100)
+        out.append((round(cum, 4), conf, rr))
+    if not out:
+        return [(1.0, 0.70, 1.5)]
+    out[-1] = (1.0, out[-1][1], out[-1][2])  # son kademe her zaman %100'e kadar
+    return out
+
+
+_DEFAULT_TIERS = "50:0.65:1.3,25:0.68:1.4,25:0.70:1.5"
+
+
 @dataclass(frozen=True)
 class Settings:
     anthropic_api_key: str | None = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"))
@@ -75,6 +97,12 @@ class Settings:
     sim_days: int = field(default_factory=lambda: int(os.getenv("SIM_DAYS", "14")))  # takvim günü
     sim_candidates: int = field(default_factory=lambda: int(os.getenv("SIM_CANDIDATES", "3")))  # LLM'e giden aday/gün
     sim_max_positions: int = field(default_factory=lambda: int(os.getenv("SIM_MAX_POSITIONS", "4")))
+    # Kademeli yatırım: portföyün ne kadarının hangi güven / risk-ödül eşiğiyle yatırılabileceği
+    sim_tiers: list[tuple[float, float, float]] = field(default_factory=lambda: _tiers("SIM_TIERS", _DEFAULT_TIERS))
+    # Daha iyi adaya geçiş: yeni aday, eldeki en zayıf pozisyondan en az bu kadar daha güvenilir VE
+    # kalan risk/ödülü bu kat daha yüksek olmalı (komisyon + gereksiz al-sat önlemi)
+    sim_rotation_conf_margin: float = field(default_factory=lambda: float(os.getenv("SIM_ROTATION_CONF_MARGIN", "0.05")))
+    sim_rotation_rr_factor: float = field(default_factory=lambda: float(os.getenv("SIM_ROTATION_RR_FACTOR", "1.25")))
     sim_risk_per_trade_pct: float = field(default_factory=lambda: float(os.getenv("SIM_RISK_PER_TRADE_PCT", "2")))
     sim_max_position_pct: float = field(default_factory=lambda: float(os.getenv("SIM_MAX_POSITION_PCT", "30")))
     sim_commission_pct: float = field(default_factory=lambda: float(os.getenv("SIM_COMMISSION_PCT", "0.2")))
@@ -90,7 +118,9 @@ class Settings:
     db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", str(BASE_DIR / "borsa_ajansi.db")))
 
     # Eşikler ve döngü limitleri
-    confidence_threshold: float = 0.70
+    # AL/SAT için en gevşek kademe eşikleri (risk yöneticisi kapısı); kademe kontrolü simülasyonda yapılır
+    confidence_threshold: float = field(default_factory=lambda: min(t[1] for t in _tiers("SIM_TIERS", _DEFAULT_TIERS)))
+    min_risk_reward: float = field(default_factory=lambda: min(t[2] for t in _tiers("SIM_TIERS", _DEFAULT_TIERS)))
     max_fact_check_retries: int = 2
     min_debate_rounds: int = field(default_factory=lambda: int(os.getenv("MIN_DEBATE_ROUNDS", "2")))
     max_debate_rounds: int = field(default_factory=lambda: int(os.getenv("MAX_DEBATE_ROUNDS", "3")))

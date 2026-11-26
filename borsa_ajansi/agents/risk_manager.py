@@ -16,7 +16,6 @@ from verification.fact_checker import _is_num
 from verification.schemas import (AnalystReport, FactCheckResult, FinalDecision, RiskJudgement, TradePlan,
                                   ValidatedTurn)
 
-MIN_RISK_REWARD = 1.5
 CONFLICT_MIN_CONFIDENCE = 0.6
 
 
@@ -131,8 +130,8 @@ def apply_gates(ticker, bundle, reports, j: RiskJudgement, penalty: float, pen_r
         if plan is None:
             gates.append("fiyat/ATR verisi yok, seviye üretilemedi -> BEKLE")
             decision = "BEKLE"
-        elif plan.risk_reward < MIN_RISK_REWARD:
-            gates.append(f"risk/ödül {plan.risk_reward} < {MIN_RISK_REWARD} -> BEKLE")
+        elif plan.risk_reward < settings.min_risk_reward:
+            gates.append(f"risk/ödül {plan.risk_reward} < {settings.min_risk_reward} -> BEKLE")
             decision, plan = "BEKLE", None
 
     close = ind.get("close")

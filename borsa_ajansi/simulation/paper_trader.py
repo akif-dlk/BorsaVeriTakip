@@ -4,6 +4,10 @@ Kurallar (hepsi Python'da, deterministik):
 - Yalnızca uzun pozisyon (AL). SAT kararı açık pozisyonu kapatır; açığa satış yok.
 - Pozisyon büyüklüğü: işlem başına öz sermayenin %SIM_RISK_PER_TRADE_PCT'si riske edilir
   (adet = risk tutarı / (giriş - stop)); tek pozisyon öz sermayenin %SIM_MAX_POSITION_PCT'sini aşamaz; nakit sınırı.
+- Kademeli yatırım (SIM_TIERS): portföyün ilk %50'si güven>=0.65 & R/Ö>=1.3 sinyallerle, sonraki %25'i
+  0.68 & 1.4 ile, kalanı 0.70 & 1.5 ile yatırılabilir. Güçlü sinyal gevşek kademelerin parasını da kullanabilir.
+- Daha iyi adaya geçiş: limit/pozisyon/nakit doluysa ve yeni aday eldeki en zayıf pozisyondan belirgin biçimde
+  daha güvenilir VE kalan risk/ödülü daha yüksekse o pozisyon satılır, yeni aday alınır.
 - Komisyon (alış+satış) ve kayma (slippage) uygulanır.
 - Stop/hedef günlük en düşük/en yüksek ile kontrol edilir; aynı gün ikisi de değerse STOP kabul edilir (muhafazakâr).
   Fiyat stop'un altında açılırsa açılış fiyatından çıkılır (gap riski).
@@ -112,8 +116,21 @@ class Order:
     commission: float
 
 
-def size_position(equity: float, cash: float, price: float, stop: float) -> int:
-    """Risk bazlı adet hesabı (tam sayı lot)."""
+def tier_limit(confidence: float, risk_reward: float) -> float | None:
+    """Sinyalin karşıladığı en sıkı kademenin kümülatif portföy oranı (ör. 0.5 / 0.75 / 1.0); hiçbiri değilse None."""
+    ok = [cum for cum, c, rr in settings.sim_tiers if confidence >= c - 1e-9 and risk_reward >= rr - 1e-9]
+    return max(ok) if ok else None
+
+
+def remaining_rr(trade: dict, price: float) -> float:
+    """Eldeki pozisyonun şu anki fiyattan kalan risk/ödülü: (hedef - fiyat) / (fiyat - stop)."""
+    if price <= trade["stop_loss"]:
+        return 0.0
+    return max(0.0, (trade["target"] - price) / (price - trade["stop_loss"]))
+
+
+def size_position(equity: float, cash: float, price: float, stop: float, max_value: float | None = None) -> int:
+    """Risk bazlı adet hesabı (tam sayı lot). max_value: kademe bütçesi (TL)."""
     fill = price * (1 + settings.sim_slippage_pct / 100)
     risk_per_share = fill - stop
     if risk_per_share <= 0 or fill <= 0:
@@ -121,7 +138,9 @@ def size_position(equity: float, cash: float, price: float, stop: float) -> int:
     by_risk = math.floor(equity * settings.sim_risk_per_trade_pct / 100 / risk_per_share)
     by_cap = math.floor(equity * settings.sim_max_position_pct / 100 / fill)
     by_cash = math.floor(cash / (fill * (1 + settings.sim_commission_pct / 100)))
-    return max(0, min(by_risk, by_cap, by_cash))
+    by_budget = math.floor(max_value / (fill * (1 + settings.sim_commission_pct / 100))) \
+        if max_value is not None else by_cash
+    return max(0, min(by_risk, by_cap, by_cash, by_budget))
 
 
 class PaperTrader:
@@ -211,11 +230,11 @@ class PaperTrader:
         return cash + value, prices
 
     def buy(self, run: dict, ticker: str, price: float, stop: float, target: float,
-            confidence: float | None = None, rationale: str = "") -> str | None:
+            confidence: float | None = None, rationale: str = "", max_value: float | None = None) -> str | None:
         eq, _ = self.equity(run)
         with self._conn() as c:
             cash = c.execute("SELECT cash FROM sim_runs WHERE id=?", (run["id"],)).fetchone()["cash"]
-            qty = size_position(eq, cash, price, stop)
+            qty = size_position(eq, cash, price, stop, max_value)
             if qty < 1:
                 return self._event(c, run["id"], f"{ticker}: AL sinyali var ama pozisyon büyüklüğü 0 (nakit/risk sınırı)")
             fill = round(price * (1 + settings.sim_slippage_pct / 100), 4)
@@ -298,7 +317,7 @@ class PaperTrader:
             return msgs
         assert self.analyze_fn is not None and self.screen_fn is not None
 
-        # 1) Açık pozisyonlar: SAT -> kapat, AL -> stop'u yukarı çek (asla aşağı değil)
+        # 1) Açık pozisyonlar: SAT -> kapat, AL -> stop'u yukarı çek (asla aşağı değil); güveni güncelle
         for t in self.open_trades(run["id"]):
             self.progress(f"🔁 Açık pozisyon {t['ticker']} yeniden değerlendiriliyor...")
             try:
@@ -309,26 +328,24 @@ class PaperTrader:
             if f.decision == "SAT":
                 p = self.feed.last(t["ticker"]) or t["entry_price"]
                 msgs.append(self.sell(t, p, "SAT sinyali"))
-            elif f.decision == "AL" and f.trade_plan and f.trade_plan.stop_loss > t["stop_loss"]:
-                with self._conn() as c:
+                continue
+            with self._conn() as c:
+                if f.confidence > 0:  # LLM erişilemediyse (güven 0) eski güveni koru
+                    c.execute("UPDATE sim_trades SET confidence=? WHERE id=?", (f.confidence, t["id"]))
+                if f.decision == "AL" and f.trade_plan and f.trade_plan.stop_loss > t["stop_loss"]:
                     c.execute("UPDATE sim_trades SET stop_loss=? WHERE id=?", (f.trade_plan.stop_loss, t["id"]))
                     msgs.append(self._event(c, run["id"], f"⬆️ {t['ticker']} stop yükseltildi: "
                                                           f"{t['stop_loss']:.2f} → {f.trade_plan.stop_loss:.2f}"))
 
-        # 2) Yeni adaylar
+        # 2) Yeni adaylar (pozisyonlar dolu olsa da taranır: daha iyi adaya geçiş için)
         held = {t["ticker"] for t in self.open_trades(run["id"])}
-        slots = settings.sim_max_positions - len(held)
-        if slots <= 0:
-            msgs.append("Maksimum pozisyon sayısına ulaşıldı, yeni alım yok.")
-            return msgs
         self.progress("🔍 BIST100 taranıyor (teknik puanlama, LLM yok)...")
         candidates = self.screen_fn(exclude=held)
         line = "🔍 Tarama adayları: " + (", ".join(f"{c['ticker']}({c['score']})" for c in candidates) or "yok")
         msgs.append(line)
         self.progress(line)
+        buys = []
         for i, cand in enumerate(candidates, 1):
-            if slots <= 0:
-                break
             tk = cand["ticker"]
             self.progress(f"🧠 {tk} analiz ediliyor ({i}/{len(candidates)}): belgeler, 4 analist, tartışma, risk. "
                           f"Model yoğunsa birkaç dakika sürebilir...")
@@ -340,21 +357,73 @@ class PaperTrader:
             if f.decision != "AL" or not f.trade_plan:
                 msgs.append(f"⏸️ {tk}: {f.decision} (güven %{f.confidence * 100:.0f}) — alım yok")
                 continue
-            price = self.feed.last(tk)
-            if price is None:
-                msgs.append(f"⚠️ {tk}: güncel fiyat yok")
-                continue
-            if price > f.trade_plan.entry_high * 1.01:
-                msgs.append(f"⏸️ {tk}: fiyat {price:.2f} giriş bölgesinin ({f.trade_plan.entry_high:.2f}) üstünde, kovalanmadı")
-                continue
-            if price <= f.trade_plan.stop_loss:
-                msgs.append(f"⏸️ {tk}: fiyat stop seviyesinin altında, alım yok")
-                continue
-            msg = self.buy(run, tk, price, f.trade_plan.stop_loss, f.trade_plan.target, f.confidence, f.rationale[:300])
-            msgs.append(msg)
-            if msg and msg.startswith("🟢"):
-                slots -= 1
+            buys.append((tk, f))
+        # En güvenilir ve en yüksek risk/ödüllü aday parayı önce alır
+        buys.sort(key=lambda x: (x[1].confidence, x[1].trade_plan.risk_reward), reverse=True)
+        for tk, f in buys:
+            msgs += self._enter(run, tk, f)
         self.snapshot()
+        return msgs
+
+    def _rotation_victim(self, run: dict, f, prices: dict[str, float]) -> dict | None:
+        """Yeni adaydan belirgin biçimde zayıf olan en kötü pozisyon (bugün alınanlar hariç)."""
+        today = self.clock().isoformat()
+        new_rr = f.trade_plan.risk_reward
+        weak = []
+        for t in self.open_trades(run["id"]):
+            if t["entry_date"] == today:
+                continue
+            p = prices.get(t["ticker"]) or t["entry_price"]
+            conf, rr = (t["confidence"] or 0.0), remaining_rr(t, p)
+            if (f.confidence >= conf + settings.sim_rotation_conf_margin
+                    and new_rr >= rr * settings.sim_rotation_rr_factor and new_rr > rr):
+                weak.append((conf, rr, t, p))
+        if not weak:
+            return None
+        weak.sort(key=lambda x: (x[0], x[1]))
+        conf, rr, t, p = weak[0]
+        return {**t, "_price": p, "_rr": rr}
+
+    def _room(self, run: dict, limit: float) -> tuple[float, float, int, dict[str, float]]:
+        """(kademe limitine kadar yatırılabilecek ek tutar, özsermaye, açık pozisyon sayısı, fiyatlar)"""
+        eq, prices = self.equity(run)
+        with self._conn() as c:
+            cash = c.execute("SELECT cash FROM sim_runs WHERE id=?", (run["id"],)).fetchone()["cash"]
+        budget = max(0.0, min(cash, limit * eq - (eq - cash)))
+        return budget, eq, len(self.open_trades(run["id"])), prices
+
+    def _enter(self, run: dict, tk: str, f) -> list[str]:
+        """Kademe limiti + gerekirse daha iyi adaya geçiş ile alım."""
+        plan, conf = f.trade_plan, f.confidence
+        tag = f"güven %{conf * 100:.0f}, R/Ö {plan.risk_reward}"
+        price = self.feed.last(tk)
+        if price is None:
+            return [f"⚠️ {tk}: güncel fiyat yok"]
+        if price > plan.entry_high * 1.01:
+            return [f"⏸️ {tk}: fiyat {price:.2f} giriş bölgesinin ({plan.entry_high:.2f}) üstünde, kovalanmadı"]
+        if price <= plan.stop_loss:
+            return [f"⏸️ {tk}: fiyat stop seviyesinin altında, alım yok"]
+        limit = tier_limit(conf, plan.risk_reward)
+        if limit is None:
+            return [f"⏸️ {tk}: AL ama hiçbir kademenin eşiğini karşılamıyor ({tag})"]
+
+        msgs: list[str] = []
+        budget, eq, n_open, prices = self._room(run, limit)
+        min_ticket = max(price * 1.01, eq * 0.02)  # anlamlı bir pozisyon: en az özsermayenin %2'si
+        if budget < min_ticket or n_open >= settings.sim_max_positions:
+            victim = self._rotation_victim(run, f, prices)
+            if victim is None:
+                why = ("pozisyon sayısı dolu" if n_open >= settings.sim_max_positions
+                       else f"%{limit * 100:.0f} kademe limiti dolu")
+                return [f"⏸️ {tk}: AL ({tag}) ama {why}; eldekilerden belirgin biçimde üstün değil, geçiş yok"]
+            msgs.append(self.sell(victim, victim["_price"],
+                                  f"daha iyi adaya geçiş → {tk} ({tag}; eski güven "
+                                  f"%{(victim['confidence'] or 0) * 100:.0f}, kalan R/Ö {victim['_rr']:.2f})"))
+            budget, eq, n_open, prices = self._room(run, limit)
+        msg = self.buy(run, tk, price, plan.stop_loss, plan.target, conf, f.rationale[:300], max_value=budget)
+        if msg and msg.startswith("🟢"):
+            msg += f" [kademe ≤%{limit * 100:.0f}, {tag}]"
+        msgs.append(msg)
         return msgs
 
     def snapshot(self, run_id: int | None = None) -> None:

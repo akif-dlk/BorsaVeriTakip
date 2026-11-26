@@ -29,11 +29,11 @@ class Clock:
         return self.d
 
 
-def _final(ticker, decision="AL", stop=95.0, target=115.0, entry_high=100.5):
-    plan = TradePlan(entry_low=98, entry_high=entry_high, stop_loss=stop, target=target, risk_reward=2.5, basis="t") \
+def _final(ticker, decision="AL", stop=95.0, target=115.0, entry_high=100.5, conf=0.8, rr=2.5):
+    plan = TradePlan(entry_low=98, entry_high=entry_high, stop_loss=stop, target=target, risk_reward=rr, basis="t") \
         if decision == "AL" else None
     return {"final": FinalDecision(ticker=ticker, data_date="2026-11-20", decision=decision, llm_decision=decision,
-                                   raw_confidence=0.8, confidence=0.8, winning_side="boga", rationale="test",
+                                   raw_confidence=conf, confidence=conf, winning_side="boga", rationale="test",
                                    key_risks=[], trade_plan=plan, close=100.0)}
 
 
@@ -172,6 +172,94 @@ def test_max_positions(env, monkeypatch):
         decisions["BBB.IS"] = _final("BBB.IS")
         trader.trade_cycle()
         assert len(trader.open_trades(trader.active_run()["id"])) == 1
+    finally:
+        object.__setattr__(settings, "sim_max_positions", 4)
+
+
+# ---------------- kademeli yatırım + daha iyi adaya geçiş ----------------
+def test_tier_limit_mapping():
+    assert pt.tier_limit(0.66, 1.35) == 0.5
+    assert pt.tier_limit(0.69, 1.45) == 0.75
+    assert pt.tier_limit(0.72, 2.0) == 1.0
+    assert pt.tier_limit(0.72, 1.35) == 0.5  # güven yüksek ama R/Ö yalnızca 1. kademeye yetiyor
+    assert pt.tier_limit(0.60, 3.0) is None
+
+
+def test_weak_signals_cannot_exceed_first_half(env):
+    trader, feed, clock, decisions = env
+    for t in ("AAA.IS", "BBB.IS", "CCC.IS"):
+        feed.prices[t] = 100.0
+    run = trader.start(10000, 14)
+    # 1. kademe sinyalleri (0.66 / 1.35): portföyün en fazla %50'si
+    trader.screen_fn = lambda exclude=None: [{"ticker": t, "score": 50} for t in ("AAA.IS", "BBB.IS", "CCC.IS")
+                                             if t not in (exclude or set())]
+    for t in ("AAA.IS", "BBB.IS", "CCC.IS"):
+        decisions[t] = _final(t, conf=0.66, rr=1.35)
+    msgs = trader.trade_cycle()
+    eq, _ = trader.equity(run)
+    invested = eq - trader.active_run()["cash"]
+    assert invested <= 0.5 * eq + 1
+    assert any("kademe limiti dolu" in m for m in msgs)
+
+
+def test_strong_signal_uses_remaining_tiers(env):
+    trader, feed, clock, decisions = env
+    feed.prices.update({"AAA.IS": 100.0, "BBB.IS": 100.0})
+    run = trader.start(10000, 14)
+    trader.buy(run, "AAA.IS", 100.0, 95.0, 115.0, 0.66, max_value=5000)  # ~%30
+    trader.buy(run, "ZZZ.IS", 100.0, 95.0, 115.0, 0.66, max_value=2000)  # toplam ~%50
+    feed.prices["ZZZ.IS"] = 100.0
+    decisions["AAA.IS"] = decisions["ZZZ.IS"] = _final("x", "BEKLE", conf=0.66)
+    decisions["BBB.IS"] = _final("BBB.IS", conf=0.75, rr=2.0)  # 3. kademe -> %100'e kadar
+    msgs = trader.trade_cycle()
+    assert any("ALIŞ BBB.IS" in m and "kademe ≤%100" in m for m in msgs)
+
+
+def test_rotation_sells_weakest_for_much_better_candidate(env):
+    trader, feed, clock, decisions = env
+    object.__setattr__(settings, "sim_max_positions", 1)
+    try:
+        feed.prices.update({"AAA.IS": 100.0, "BBB.IS": 100.0})
+        run = trader.start(10000, 14)
+        trader.buy(run, "AAA.IS", 100.0, 95.0, 107.0, 0.66)  # kalan R/Ö ~1.4
+        clock.d = date(2026, 11, 24)
+        decisions["AAA.IS"] = _final("AAA.IS", "BEKLE", conf=0.66)
+        decisions["BBB.IS"] = _final("BBB.IS", conf=0.78, rr=2.5)
+        msgs = trader.trade_cycle()
+        assert any("SATIŞ AAA.IS" in m and "daha iyi adaya geçiş" in m for m in msgs)
+        assert [t["ticker"] for t in trader.open_trades(run["id"])] == ["BBB.IS"]
+    finally:
+        object.__setattr__(settings, "sim_max_positions", 4)
+
+
+def test_no_rotation_when_only_slightly_better(env):
+    trader, feed, clock, decisions = env
+    object.__setattr__(settings, "sim_max_positions", 1)
+    try:
+        feed.prices.update({"AAA.IS": 100.0, "BBB.IS": 100.0})
+        run = trader.start(10000, 14)
+        trader.buy(run, "AAA.IS", 100.0, 95.0, 110.0, 0.70)  # kalan R/Ö 2.0
+        clock.d = date(2026, 11, 24)
+        decisions["AAA.IS"] = _final("AAA.IS", "BEKLE", conf=0.70)
+        decisions["BBB.IS"] = _final("BBB.IS", conf=0.73, rr=2.2)  # +0.03 güven: yetersiz
+        msgs = trader.trade_cycle()
+        assert not any("daha iyi adaya geçiş" in m for m in msgs)
+        assert [t["ticker"] for t in trader.open_trades(run["id"])] == ["AAA.IS"]
+    finally:
+        object.__setattr__(settings, "sim_max_positions", 4)
+
+
+def test_position_bought_today_is_not_rotated(env):
+    trader, feed, clock, decisions = env
+    object.__setattr__(settings, "sim_max_positions", 1)
+    try:
+        feed.prices.update({"AAA.IS": 100.0, "BBB.IS": 100.0})
+        run = trader.start(10000, 14)
+        trader.buy(run, "AAA.IS", 100.0, 95.0, 107.0, 0.66)
+        decisions["AAA.IS"] = _final("AAA.IS", "BEKLE", conf=0.66)
+        decisions["BBB.IS"] = _final("BBB.IS", conf=0.9, rr=3.0)
+        msgs = trader.trade_cycle()
+        assert not any("daha iyi adaya geçiş" in m for m in msgs)
     finally:
         object.__setattr__(settings, "sim_max_positions", 4)
 

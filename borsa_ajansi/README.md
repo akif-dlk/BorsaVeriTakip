@@ -43,6 +43,11 @@ Otomatik (hafta içi): 10:30 işlem döngüsü, 18:30 stop/hedef kontrolü + gü
 - Yalnızca uzun pozisyon; SAT kararı açık pozisyonu kapatır.
 - Risk bazlı pozisyon: işlem başına öz sermayenin %2'si; tek pozisyon en fazla %30; en fazla 4 pozisyon.
 - %0.2 komisyon + %0.1 kayma; stop ve hedef aynı gün görülürse stop sayılır; gap'te açılış fiyatı.
+- Kademeli yatırım (`SIM_TIERS=50:0.65:1.3,25:0.68:1.4,25:0.70:1.5`): portföyün ilk %50'si güven ≥0.65 ve
+  R/Ö ≥1.3, sonraki %25'i 0.68 / 1.4, kalan %25'i 0.70 / 1.5 sinyalle yatırılır. Güçlü sinyal alt kademelerin
+  parasını da kullanabilir. Aynı döngüde en güvenilir / en yüksek R/Ö'lü aday parayı önce alır.
+- Daha iyi adaya geçiş: limit, nakit veya pozisyon sayısı doluysa ve yeni aday eldeki en zayıf pozisyondan en az
+  +0.05 güven ve 1.25 kat kalan R/Ö üstünse o pozisyon satılır, yeni aday alınır (aynı gün alınan satılmaz).
 - Fiyat giriş bölgesinin üstündeyse kovalanmaz; AL devam ederse stop yalnızca yukarı çekilir.
 - Süre dolunca tüm pozisyonlar kapanır ve BIST100'e karşı sonuç raporlanır.
 

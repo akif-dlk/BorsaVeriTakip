@@ -1,5 +1,7 @@
 import pytest
 
+from config.settings import settings
+
 import main as main_mod
 from agents import risk_manager
 from graph.workflow import run_analysis
@@ -85,7 +87,7 @@ def test_end_to_end_al_with_retry_and_rejected_argument(provider):
     assert f.decision == "AL"
     p = f.trade_plan
     assert p.stop_loss < p.entry_low <= p.entry_high < p.target
-    assert p.risk_reward >= risk_manager.MIN_RISK_REWARD
+    assert p.risk_reward >= settings.min_risk_reward
     # model katmanlaması
     tiers = {(c["schema"], c["tier"]) for c in llm.calls}
     assert ("AnalystReport", "fast") in tiers
@@ -95,18 +97,18 @@ def test_end_to_end_al_with_retry_and_rejected_argument(provider):
 
 
 def test_persistent_liar_capped_at_three_attempts_and_penalized(provider):
-    llm = FakeLLM(Script(liar_times={"temel": 99}, confidence=0.75))
+    llm = FakeLLM(Script(liar_times={"temel": 99}, confidence=0.72))
     st = run_analysis("TEST.IS", llm, data_provider=provider)
     assert st["attempts"]["temel"] == 3  # 1 + 2 yeniden deneme
     assert not st["checks"]["temel"].passed
     f = st["final"]
     assert f.confidence < f.raw_confidence
-    assert f.decision == "BEKLE"  # 0.75 - 0.10 < 0.70
+    assert f.decision == "BEKLE"  # 0.72 - 0.10 < 0.65 (en gevşek kademe)
     assert f.trade_plan is None
 
 
 def test_low_confidence_forces_bekle(provider):
-    st = run_analysis("TEST.IS", FakeLLM(Script(confidence=0.65)), data_provider=provider)
+    st = run_analysis("TEST.IS", FakeLLM(Script(confidence=0.60)), data_provider=provider)
     assert st["final"].decision == "BEKLE"
     assert any("eşik" in g for g in st["final"].gate_reasons)
 
