@@ -9,6 +9,8 @@ yalnızca standart kütüphaneyi kullanır, hangi ortamda kurulu olduğuna bakma
   ortam değişkenlerinden okur; `.env` burada yüklenir (dbt kendisi `.env` okumaz).
 - dbt çıktısı satır satır loglanır; başarısızlıkta son satırlarla birlikte `DbtError` fırlatılır (Airflow görevi
   böylece düşer).
+- `build_staging` / `build_marts` her çağrıdan sonra (başarısız olsa da) test sonuçlarını `bvt.dbt_report` ile
+  `ops.dbt_test_results`'a yazar; kayıt hatası build sonucunu değiştirmez, yalnızca loglanır.
 
 Kullanım:
     python -m bvt.dbt_runner debug                              # bağlantı kontrolü
@@ -25,6 +27,7 @@ import subprocess
 import sys
 import threading
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("bvt.dbt_runner")
@@ -34,7 +37,7 @@ DEFAULT_DBT_DIR = Path(__file__).resolve().parents[2] / "dbt"
 STAGING_SELECT = ("source:raw", "staging")
 # Marts katmanı: enstrüman tanımları (seed) + star schema (dim_instrument, dim_date, fact_daily_prices),
 # göstergeler (mart_indicators), getiriler/özetler/korelasyonlar (mart_returns, mart_period_returns,
-# mart_correlations) ve testleri.
+# mart_correlations), anormal fiyat tespiti (mart_price_anomalies) ve testleri (singular testler dahil).
 # Staging'e bağımlıdır ama onu yeniden kurmaz; günlük DAG'de staging görevinden sonra çalışır.
 MARTS_SELECT = ("instrument_metadata", "marts")
 TAIL_LINES = 30
@@ -137,16 +140,35 @@ def summarize(lines: list[str]) -> dict:
     return {}
 
 
+def record_test_results(started_at: datetime) -> int:
+    """Son çağrının test sonuçlarını ops.dbt_test_results'a yazar. Kayıt hatası (veritabanı yok, tablo yok) build'i
+    düşürmez; yalnızca uyarı loglanır."""
+    try:
+        from bvt.dbt_report import record_latest
+
+        return record_latest(started_after=started_at)
+    except Exception:  # noqa: BLE001 - rapor kaydı en iyi çaba; asıl sonuç dbt'nin çıkış kodudur
+        log.warning("dbt test sonuçları kaydedilemedi", exc_info=True)
+        return 0
+
+
+def _build(select: tuple[str, ...]) -> dict:
+    started_at = datetime.now(timezone.utc)
+    try:
+        lines = run_dbt(["build", "--select", *select], timeout=BUILD_TIMEOUT_S)
+    finally:
+        record_test_results(started_at)  # test düşse de sonuçlar rapora girer
+    return {"select": " ".join(select), **summarize(lines)}
+
+
 def build_staging() -> dict:
     """Airflow görevinin çağırdığı fonksiyon: raw kaynak testleri + staging görünümleri. Özet XCom'a yazılır."""
-    lines = run_dbt(["build", "--select", *STAGING_SELECT], timeout=BUILD_TIMEOUT_S)
-    return {"select": " ".join(STAGING_SELECT), **summarize(lines)}
+    return _build(STAGING_SELECT)
 
 
 def build_marts() -> dict:
     """Airflow görevinin çağırdığı fonksiyon: seed + star schema tabloları ve testleri. Özet XCom'a yazılır."""
-    lines = run_dbt(["build", "--select", *MARTS_SELECT], timeout=BUILD_TIMEOUT_S)
-    return {"select": " ".join(MARTS_SELECT), **summarize(lines)}
+    return _build(MARTS_SELECT)
 
 
 def main(argv: list[str] | None = None) -> int:

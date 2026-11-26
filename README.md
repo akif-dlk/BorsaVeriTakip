@@ -161,6 +161,42 @@ where i.asset_class = 'stock'
 group by 1, 2, 3 order by 1, 2, 3;
 ```
 
+### Veri kalitesi: dbt testleri, anormal fiyatlar, test raporu
+
+Her katmanda testler vardır: not_null / unique / accepted_values / relationships, doğal anahtar tekilliği,
+`accepted_range` (fiyatlar > 0, hacim ≥ 0, RSI 0-100, korelasyon [-1, 1]) ve `not_in_future` (İstanbul takvimine
+göre ileri tarihli fiyat yok). Singular testler (`dbt/tests/`): gram altının ons × USDTRY / 31.1034768 ile tutarlı
+olması, olgunun birincil kaynağın tüm günlerini taşıması ve son 10 gündeki ciddi fiyat anormallikleri (uyarı).
+
+`marts.mart_price_anomalies` anormal fiyatları satır elemeden işaretler (başvuru uygulaması `src/bvt/anomalies.py`):
+
+| Kural | Koşul | Önem |
+|---|---|---|
+| `return_spike` | \|günlük getiri\| > fx/altın %10, endeks %15, hisse %25 (düzeltilmemiş bölünme, kaynak hatası) | error |
+| `zscore_spike` | önceki 60 log getiriye göre \|z\| > 5 | warn |
+| `stale_price` | aynı kapanış ≥ 5 işlem günü | warn |
+| `zero_volume` | hissede hacim 0 | warn |
+| `invalid_ohlc` | low ≤ open/close ≤ high bozuk | warn |
+
+Her `dbt build` (DAG'de staging ve marts) sonrasında test sonuçları `ops.dbt_test_results`'a yazılır;
+`dbt_test_report` görevi son 6 saatin sonuçları ve 30 günlük anormallik özetiyle `test_report.md` /
+`test_report.json` üretir (dbt hedef dizini; konteynerde `/tmp/dbt/target`, `BVT_REPORT_DIR` ile değiştirilebilir).
+Mevcut bir veritabanına yeni tabloyu eklemek için `PYTHONPATH=src python -m bvt.db --init`.
+
+```bash
+PYTHONPATH=src python -m bvt.dbt_report                  # veritabanından günlük test raporu
+PYTHONPATH=src python -m bvt.dbt_report --from-target    # veritabanı olmadan, son run_results.json'dan
+PYTHONPATH=src python -m bvt.dbt_report --record --fail-on-error   # kaydet + başarısız test varsa çıkış 1
+BVT_TEST_PG=1 python -m pytest -q tests/test_mart_anomalies_pg.py  # SQL ↔ Python anormallik karşılaştırması
+```
+
+```sql
+select price_date, instrument_code, anomaly_type, severity, metric_value, threshold
+from marts.mart_price_anomalies
+where price_date >= current_date - 30
+order by severity, price_date desc;
+```
+
 dbt, Airflow ile bağımlılık çakışması olmasın diye **ayrı bir sanal ortama** kurulur (imajda `/opt/dbt-venv`).
 `bvt.dbt_runner` dbt'yi `.env` yüklenmiş olarak ve proje/profil dizinini vererek çağırır. Günlük DAG'de
 `dbt_build_staging` görevi üç çekimden sonra çalışır (`dbt build --select source:raw staging`), başarılı
@@ -187,9 +223,9 @@ docker compose exec airflow-scheduler python -m bvt.dbt_runner build            
 ```
 ├── docker-compose.yml   # servisler: PostgreSQL, Airflow (webserver, scheduler, init, metadata DB)
 ├── airflow/             # Dockerfile (Airflow + proje bağımlılıkları + ayrı dbt ortamı), dags/
-├── dbt/                 # dbt projesi: models/staging (stg_*), models/marts (dim_*, fact_*, mart_*), seeds, makrolar, testler
+├── dbt/                 # dbt projesi: models/staging (stg_*), models/marts (dim_*, fact_*, mart_*), seeds, makrolar, generic + singular testler
 ├── sql/init/            # ilk açılışta çalışan şema betikleri
-├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry, dbt_runner, indicators, returns
+├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry, dbt_runner, dbt_report, indicators, returns, anomalies
 ├── docs/                # mimari, kaynaklar, yol haritası
 └── tests/
 ```

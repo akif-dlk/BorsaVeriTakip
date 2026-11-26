@@ -43,7 +43,7 @@ flowchart LR
 | `staging` | Temizlenmiş, tipleri düzeltilmiş `stg_*` görünümleri | dbt |
 | `marts` | Star schema + göstergeler, korelasyonlar | dbt |
 | `streaming` | Dakikalık fiyatlar ve pencere ortalamaları | Kafka consumer |
-| `ops` | `pipeline_runs` (çalışma kayıtları + tetikleyici), `data_gaps` (tatil / eksik gün raporu) | Python çekiciler, Airflow |
+| `ops` | `pipeline_runs` (çalışma kayıtları + tetikleyici), `data_gaps` (tatil / eksik gün raporu), `dbt_test_results` (dbt test sonuçları) | Python çekiciler, Airflow |
 
 ## Geçmiş yükleme ve boşluklar
 
@@ -89,8 +89,23 @@ flowchart LR
   pencere dolmadan NULL, [-1, 1]'e kırpılır). Takvimler farklı olduğundan (BIST tatili, ABD vadeli altın) tatil
   sonrası getiri birden fazla günü kapsayabilir; ileri doldurma yapılmaz. Başvuru uygulaması `bvt.returns`
   (`correlation_matrix()` ısı haritası/API için simetrik matris üretir).
-- **Testler:** not_null, accepted_values, bağımlılıksız `unique_combination_of_columns` (doğal anahtar) ve
-  `accepted_range` (ör. RSI 0-100, SMA/volatilite ≥ 0; NULL'lar hariç) generic testleri. `dbt deps` gerekmez; ağsız ortamda da çalışır.
+- **Anormal fiyat tespiti (`mart_price_anomalies`, tablo):** enstrüman × gün × kural, yalnızca anormal satırlar.
+  `return_spike` (|basit getiri| > varlık eşiği: fx/altın %10, endeks %15, hisse %25; error), `zscore_spike`
+  (önceki 60 log getiriye göre |z| > 5, en az 20 gözlem; warn), `stale_price` (aynı fiyat ≥ 5 işlem günü; warn),
+  `zero_volume` (hisse; warn), `invalid_ohlc` (warn). Olgudan satır elenmez; tablo gözden geçirme ve alarm içindir.
+  Başvuru uygulaması `bvt.anomalies`.
+- **Testler:** not_null, unique, accepted_values, relationships; bağımlılıksız generic testler
+  `unique_combination_of_columns` (doğal anahtar), `accepted_range` (ör. RSI 0-100, fiyat > 0 `inclusive: false`;
+  NULL'lar hariç) ve `not_in_future` (tarih İstanbul takvimine göre ileride olamaz). Singular testler
+  (`dbt/tests/*.sql`): `assert_gram_gold_matches_ounce` (gram = ons × USDTRY / 31.1034768, binde 1 tolerans; error),
+  `assert_fact_covers_primary_prices` (olgu, birincil kaynağın tüm günlerini taşır; error),
+  `warn_recent_price_anomalies` (son 10 günde error düzeyli anormallik; warn — geçmiş gerçek şoklar build'i
+  kırmaz). Marts testleri staging'e ref vermez (eager seçimde staging build'inde eski tablolara karşı çalışmasın
+  diye). `dbt deps` gerekmez; ağsız ortamda da çalışır.
+- **Test raporu:** `bvt.dbt_runner` her build'den sonra (başarısız olsa da) `run_results.json` + `manifest.json`'ı
+  `bvt.dbt_report` ile `ops.dbt_test_results`'a yazar (çağrı × test; tür, model, sütun, önem, durum, bozan satır
+  sayısı). `dbt_test_report` görevi son 6 saatin en güncel sonuçlarını ve 30 günlük anormallik özetini
+  `test_report.md` / `test_report.json` olarak yazar (dbt hedef dizini veya `BVT_REPORT_DIR`).
 - **Çalıştırma:** dbt ayrı sanal ortamda (`/opt/dbt-venv`, `requirements-dbt.txt`); `bvt.dbt_runner` alt süreç
   olarak çağırır, çıktıyı satır satır loglar, hata/süre aşımında görevi düşürür. Proje konteynere salt-okunur
   bağlanır; `target/` ve loglar `DBT_TARGET_PATH` / `DBT_LOG_PATH` ile `/tmp/dbt` altına yazılır.
@@ -108,7 +123,9 @@ flowchart LR
 - **dbt:** `dbt_build_staging` görevi üç çekimden sonra (`trigger_rule=all_done`) `dbt build --select
   source:raw staging` çalıştırır; test başarısızsa görev düşer, yeniden denenmez (`retries=0`). Ardından
   `dbt_build_marts` (`all_success`: staging testi düşerse hatalı veri marts'a taşınmaz) `dbt build --select
-  instrument_metadata marts` ile seed'i ve star schema tablolarını kurup test eder.
+  instrument_metadata marts` ile seed'i ve star schema tablolarını kurup test eder. Her iki görev test
+  sonuçlarını `ops.dbt_test_results`'a yazar; `dbt_test_report` (`all_done`: dbt düşse de) günlük test raporunu
+  üretir, özetini XCom'a döner.
 - **Boşluk kontrolü:** `check_gaps` görevi üç çekimden sonra (`trigger_rule=all_done`, biri düşse de) çalışır,
   son `BVT_GAP_CHECK_DAYS` günü `bvt.gaps` ile sınıflandırıp `ops.data_gaps`'e yazar; görevi düşürmez.
 - **Retry:** istek düzeyinde `bvt.retry` (üstel bekleme, yalnızca geçici hatalar, hız sınırında ≥30 sn), görev

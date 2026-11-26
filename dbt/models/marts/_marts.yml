@@ -123,8 +123,8 @@ models:
         description: Okunabilirlik için taşınan doğal anahtar.
         data_tests: [not_null]
       - name: price_date
-        description: İşlem günü.
-        data_tests: [not_null]
+        description: İşlem günü (İstanbul takvimine göre gelecekte olamaz).
+        data_tests: [not_null, not_in_future]
       - name: asset_class
         data_tests:
           - not_null
@@ -140,18 +140,30 @@ models:
           - accepted_values: {values: ['yfinance', 'derived']}
       - name: open
         description: Açılış (EVDS gibi yalnızca kapanış veren kaynaklarda NULL olabilir).
+        data_tests:
+          - accepted_range: {min_value: 0, inclusive: false}
       - name: high
         description: Gün içi en yüksek.
+        data_tests:
+          - accepted_range: {min_value: 0, inclusive: false}
       - name: low
         description: Gün içi en düşük.
+        data_tests:
+          - accepted_range: {min_value: 0, inclusive: false}
       - name: close
-        description: Kapanış fiyatı.
-        data_tests: [not_null]
+        description: Kapanış fiyatı (> 0).
+        data_tests:
+          - not_null
+          - accepted_range: {min_value: 0, inclusive: false}
       - name: volume
         description: İşlem hacmi (hisseler); döviz, altın ve endekste NULL.
+        data_tests:
+          - accepted_range: {min_value: 0}
       - name: adj_close
-        description: Getiri ve göstergelerde kullanılacak düzeltilmiş kapanış.
-        data_tests: [not_null]
+        description: Getiri ve göstergelerde kullanılacak düzeltilmiş kapanış (> 0).
+        data_tests:
+          - not_null
+          - accepted_range: {min_value: 0, inclusive: false}
       - name: has_valid_ohlc
         data_tests: [not_null]
       - name: loaded_at
@@ -409,3 +421,51 @@ models:
         description: Son 252 ortak gözlemin korelasyonu (≈ yıl).
         data_tests:
           - accepted_range: {min_value: -1, max_value: 1}
+
+  - name: mart_price_anomalies
+    description: >
+      Anormal fiyat tespiti; tanecik enstrüman × işlem günü × kural, yalnızca anormal satırlar. Kurallar:
+      return_spike (|basit getiri| > varlık sınıfı eşiği; error), zscore_spike (önceki 60 log getiriye göre |z| > 5;
+      warn), stale_price (aynı fiyat ≥ 5 işlem günü; warn), zero_volume (hissede hacim 0; warn), invalid_ohlc
+      (has_valid_ohlc = false; warn). fact_daily_prices'tan satır elenmez. Tanımlar src/bvt/anomalies.py ile aynıdır.
+    data_tests:
+      - unique_combination_of_columns:
+          combination_of_columns: [instrument_key, date_key, anomaly_type]
+    columns:
+      - name: instrument_key
+        description: dim_instrument'e yabancı anahtar.
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_instrument'), field: instrument_key}
+      - name: date_key
+        description: dim_date'e yabancı anahtar.
+        data_tests:
+          - not_null
+          - relationships: {to: ref('dim_date'), field: date_key}
+      - name: instrument_code
+        data_tests: [not_null]
+      - name: price_date
+        data_tests: [not_null]
+      - name: asset_class
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['fx', 'stock', 'index', 'gold']}
+      - name: anomaly_type
+        description: Tetiklenen kural.
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['return_spike', 'zscore_spike', 'stale_price', 'zero_volume', 'invalid_ohlc']}
+      - name: severity
+        description: error (gözden geçirilmeli, büyük olasılıkla veri hatası) veya warn (olağandışı).
+        data_tests:
+          - not_null
+          - accepted_values: {values: ['error', 'warn']}
+      - name: metric_value
+        description: Kuralın ölçtüğü değer (getiri oranı, z-skoru, art arda gün sayısı, hacim); invalid_ohlc'de NULL.
+      - name: threshold
+        description: Kuralın eşiği (zero_volume ve invalid_ohlc'de NULL).
+      - name: adj_close
+        description: O günkü düzeltilmiş kapanış.
+        data_tests: [not_null]
+      - name: prev_adj_close
+        description: Enstrümanın bir önceki işlem günündeki düzeltilmiş kapanış (ilk gün NULL).

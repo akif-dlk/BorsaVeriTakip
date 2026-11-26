@@ -147,3 +147,17 @@ def test_dbt_marts_callable(dag_module, monkeypatch):
     monkeypatch.setattr(dbt_runner, "build_marts", lambda: {"pass": 60})
     task = next(t for t in dag_module.dag.tasks if t.task_id == "dbt_build_marts")
     assert task.python_callable(ti=object(), ds="2026-11-18") == {"pass": 60}
+
+
+def test_dbt_test_report_runs_after_marts_even_on_failure(dag_module):
+    task = next(t for t in dag_module.dag.tasks if t.task_id == "dbt_test_report")
+    assert [t.task_id for t in task.upstream] == ["dbt_build_marts"]
+    assert task.kwargs["trigger_rule"] == "all_done"  # staging/marts düşse de rapor üretilir
+
+
+def test_dbt_test_report_callable(dag_module, monkeypatch):
+    from bvt import dbt_report
+
+    monkeypatch.setattr(dbt_report, "daily_report", lambda: {"ok": True, "total": 120})
+    task = next(t for t in dag_module.dag.tasks if t.task_id == "dbt_test_report")
+    assert task.python_callable(ti=object(), ds="2026-11-26") == {"ok": True, "total": 120}

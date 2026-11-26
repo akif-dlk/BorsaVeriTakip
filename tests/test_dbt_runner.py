@@ -9,6 +9,13 @@ from bvt import dbt_runner
 DONE_LINE = "07:05:12  Done. PASS=58 WARN=1 ERROR=0 SKIP=0 NO-OP=0 TOTAL=59"
 
 
+@pytest.fixture(autouse=True)
+def no_result_recording(monkeypatch, request):
+    """build_* sonrası test sonucu kaydı veritabanına gider; ayrıca test edilenler dışında devre dışı."""
+    if "record" not in request.node.name:
+        monkeypatch.setattr(dbt_runner, "record_test_results", lambda started_at: 0)
+
+
 def test_executable_prefers_env(monkeypatch):
     monkeypatch.setenv("DBT_BIN", "/opt/dbt-venv/bin/dbt")
     assert dbt_runner.dbt_executable() == "/opt/dbt-venv/bin/dbt"
@@ -126,3 +133,28 @@ def test_build_marts_selects_seed_and_marts(monkeypatch):
     assert seen["args"] == ["build", "--select", "instrument_metadata", "marts"]
     assert seen["timeout"] == dbt_runner.BUILD_TIMEOUT_S
     assert result["select"] == "instrument_metadata marts" and result["total"] == 59
+
+
+def test_build_records_test_results_even_when_dbt_fails(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dbt_runner, "record_test_results", lambda started_at: calls.append(started_at) or 0)
+
+    def boom(args, timeout=None):
+        raise dbt_runner.DbtError(args, 1, ["FAIL 1 assert_gram_gold_matches_ounce"])
+
+    monkeypatch.setattr(dbt_runner, "run_dbt", boom)
+    with pytest.raises(dbt_runner.DbtError):
+        dbt_runner.build_marts()
+    assert len(calls) == 1 and calls[0].tzinfo is not None
+
+
+def test_record_test_results_never_raises(monkeypatch):
+    import bvt.dbt_report
+
+    def broken(started_after=None):
+        raise RuntimeError("veritabanı yok")
+
+    monkeypatch.setattr(bvt.dbt_report, "record_latest", broken)
+    from datetime import datetime, timezone
+
+    assert dbt_runner.record_test_results(datetime.now(timezone.utc)) == 0

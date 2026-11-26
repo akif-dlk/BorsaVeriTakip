@@ -11,7 +11,10 @@ Döviz (USD/TRY, EUR/TRY), BIST (8 hisse + XU100) ve altını (ons + gram) her i
   Ardından `check_gaps` (çekimler başarısız olsa da çalışır) son 30 günün boşluk raporunu `ops.data_gaps`'e yazar.
   Paralelinde `dbt_build_staging` raw kaynak testlerini ve `staging.stg_*` görünümlerini (dbt) kurar/test eder;
   başarılı olursa `dbt_build_marts` star schema'yı (`marts.dim_instrument`, `dim_date`, `fact_daily_prices`) ve
-  türetilmiş tabloları (`marts.mart_indicators`, `mart_returns`, `mart_period_returns`, `mart_correlations`) kurar.
+  türetilmiş tabloları (`marts.mart_indicators`, `mart_returns`, `mart_period_returns`, `mart_correlations`,
+  `mart_price_anomalies`) kurar. Her dbt görevi test sonuçlarını `ops.dbt_test_results`'a yazar.
+  Son olarak `dbt_test_report` (dbt görevleri başarısız olsa da çalışır) son 6 saatin test sonuçlarını ve 30
+  günlük fiyat anormalliklerini `test_report.md` / `test_report.json` olarak yazar; özet XCom'a döner.
 - **Retry:** iki katman. Çekici içinde HTTP isteği üstel bekleme ile 4 kez denenir (hız sınırında en az 30 sn);
   o da tükenirse Airflow görevi 5, 10 dk... (üst sınır 30 dk) arayla 2 kez daha dener.
 - İş mantığı `bvt.pipeline` / `bvt.fetch_*` modüllerindedir; bu dosya yalnızca orkestrasyonu tanımlar.
@@ -57,6 +60,13 @@ def dbt_build_marts(**_context) -> dict:
     from bvt.dbt_runner import build_marts
 
     return build_marts()
+
+
+def dbt_test_report(**_context) -> dict:
+    """dbt test sonuçları + fiyat anormallikleri raporu. Testler düşse de rapor üretilir; özet XCom'a döner."""
+    from bvt.dbt_report import daily_report
+
+    return daily_report()
 
 
 default_args = {
@@ -106,5 +116,12 @@ with DAG(
         # Varsayılan all_success: staging testi düşerse hatalı veri marts tablolarına taşınmaz.
         retries=0,
     )
+    report = PythonOperator(
+        task_id="dbt_test_report",
+        python_callable=dbt_test_report,
+        # Rapor en çok testler düştüğünde gereklidir: staging veya marts başarısız olsa da çalışır.
+        trigger_rule=TriggerRule.ALL_DONE,
+        retries=1,
+    )
     fetch_tasks >> gap_check
-    fetch_tasks >> staging >> marts
+    fetch_tasks >> staging >> marts >> report

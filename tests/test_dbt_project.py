@@ -19,7 +19,8 @@ CONTRACT = ["instrument_code", "asset_class", "price_date", "source", "currency"
             "adj_close", "volume", "is_primary_source", "inserted_at", "loaded_at", "has_valid_ohlc"]
 STAGING_MODELS = ["stg_fx_rates", "stg_gold_prices", "stg_stock_prices"]
 MART_MODELS = ["dim_date", "dim_instrument", "fact_daily_prices", "mart_correlations", "mart_indicators",
-               "mart_period_returns", "mart_returns"]
+               "mart_period_returns", "mart_price_anomalies", "mart_returns"]
+SINGULAR_TESTS = ["assert_fact_covers_primary_prices", "assert_gram_gold_matches_ounce", "warn_recent_price_anomalies"]
 
 
 def load(path: Path) -> dict:
@@ -79,6 +80,7 @@ def test_generic_test_and_macros_exist():
     generic = (DBT / "tests" / "generic" / "unique_combination_of_columns.sql").read_text(encoding="utf-8")
     assert "{% test unique_combination_of_columns" in generic
     assert "{% test accepted_range" in (DBT / "tests" / "generic" / "accepted_range.sql").read_text(encoding="utf-8")
+    assert "{% test not_in_future" in (DBT / "tests" / "generic" / "not_in_future.sql").read_text(encoding="utf-8")
     assert "macro generate_schema_name" in (DBT / "macros" / "generate_schema_name.sql").read_text(encoding="utf-8")
     assert "macro ohlc_is_valid" in (DBT / "macros" / "ohlc_is_valid.sql").read_text(encoding="utf-8")
 
@@ -236,3 +238,64 @@ def test_return_marts_grain_and_ranges_are_tested():
         assert "relationships" in _column_tests(corr, key), key
     assert "accepted_values" in _column_tests(_model("mart_period_returns"), "period_type")
     assert "accepted_range" in _column_tests(_model("mart_returns"), "simple_return")
+
+
+def test_mart_price_anomalies_matches_python_reference_definitions():
+    """Anormallik eşikleri ve kural adları SQL'de bvt.anomalies ile aynı olmalı."""
+    from bvt import anomalies as an
+
+    sql = (MARTS / "mart_price_anomalies.sql").read_text(encoding="utf-8")
+    settings = dict(re.findall(r"{%-? set (\w+) = (.+?) %}", sql))
+    assert settings == {"return_thresholds": str(an.RETURN_SPIKE_THRESHOLDS), "zscore_window": str(an.ZSCORE_WINDOW),
+                        "zscore_min_obs": str(an.ZSCORE_MIN_OBS), "zscore_threshold": str(an.ZSCORE_THRESHOLD),
+                        "stale_run_days": str(an.STALE_RUN_DAYS), "min_std": str(an.MIN_STD)}
+    for kind, severity in an.ANOMALY_SEVERITY.items():
+        assert re.search(rf"'{kind}'(?: as anomaly_type)?, '{severity}'", sql), kind
+    assert set(an.ANOMALY_COLUMNS) <= _output_columns(sql)
+    assert "ref('fact_daily_prices')" in sql
+    model = _model("mart_price_anomalies")
+    accepted = next(t["accepted_values"]["values"] for t in next(
+        c for c in model["columns"] if c["name"] == "anomaly_type")["data_tests"] if isinstance(t, dict))
+    assert accepted == list(an.ANOMALY_TYPES)
+    grain = model["data_tests"][0]["unique_combination_of_columns"]["combination_of_columns"]
+    assert grain == ["instrument_key", "date_key", "anomaly_type"]
+
+
+def test_singular_tests_exist_and_use_ref():
+    found = sorted(p.stem for p in (DBT / "tests").glob("*.sql"))
+    assert found == SINGULAR_TESTS
+    for name in SINGULAR_TESTS:
+        sql = (DBT / "tests" / f"{name}.sql").read_text(encoding="utf-8")
+        assert "ref('" in sql and "source(" not in sql, name
+    warn = (DBT / "tests" / "warn_recent_price_anomalies.sql").read_text(encoding="utf-8")
+    assert "config(severity='warn')" in warn  # geçmiş şoklar günlük build'i kırmaz
+
+
+def test_marts_singular_tests_do_not_depend_on_staging():
+    """dbt build eager seçimde bir ebeveyni seçilen testi çalıştırır: staging build'inde eski marts tablolarına
+    karşı yanlış alarm vermesin diye marts testleri staging modellerine ref vermez."""
+    for name in ("assert_fact_covers_primary_prices", "warn_recent_price_anomalies"):
+        sql = (DBT / "tests" / f"{name}.sql").read_text(encoding="utf-8")
+        assert "ref('stg_" not in sql, name
+
+
+def test_fact_prices_positive_and_dates_not_in_future():
+    fact = _model("fact_daily_prices")
+    for col in ("open", "high", "low", "close", "adj_close"):
+        assert {"accepted_range": {"min_value": 0, "inclusive": False}} in next(
+            c for c in fact["columns"] if c["name"] == col)["data_tests"], col
+    assert "not_in_future" in _column_tests(fact, "price_date")
+    staging = {m["name"]: m for m in load(STAGING / "_staging.yml")["models"]}
+    for name, model in staging.items():
+        assert "not_in_future" in _column_tests(model, "price_date"), name
+        assert "accepted_range" in _column_tests(model, "adj_close"), name
+
+
+def test_ops_dbt_test_results_table_matches_report_statuses():
+    from bvt import dbt_report
+
+    sql = (ROOT / "sql" / "init" / "007_ops_dbt_test_results.sql").read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS ops.dbt_test_results" in sql
+    statuses = re.search(r"status IN \(([^)]*)\)", sql).group(1)
+    assert [v.strip(" '") for v in statuses.split(",")] == list(dbt_report.STATUSES)
+    assert "PRIMARY KEY (invocation_id, unique_id)" in sql
