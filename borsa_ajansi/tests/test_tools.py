@@ -170,3 +170,54 @@ def test_screen_drops_illiquid_names(ohlcv):
     data = {"XU100.IS": ohlcv, "LIQ.IS": ohlcv, "THIN.IS": thin}
     rows = screener.screen(["LIQ.IS", "THIN.IS"], top_n=5, fetcher=lambda t, p: data[t])
     assert [r["ticker"] for r in rows] == ["LIQ.IS"]
+
+
+# ---------- yerel ambar tazeliği ----------
+def test_expected_last_bar():
+    from datetime import date
+    assert market_data.expected_last_bar(_tr(9, 30)) == date(2026, 11, 23)   # Salı açılış öncesi -> Pazartesi
+    assert market_data.expected_last_bar(_tr(10, 30)) == date(2026, 11, 24)  # seans açık -> bugün
+    from datetime import datetime
+    sat = datetime(2026, 11, 28, 12, 0, tzinfo=market_data._TR)
+    assert market_data.expected_last_bar(sat) == date(2026, 11, 27)          # Cumartesi -> Cuma
+
+
+def test_warehouse_freshness_rules():
+    df = _intraday_df(500.0)  # son mum 24.11.2026
+    assert market_data._warehouse_is_fresh("THYAO.IS", df, _tr(10, 30))
+    assert market_data._warehouse_is_fresh("THYAO.IS", df.iloc[:-1], _tr(9, 30))       # dünkü mum, seans kapalı
+    assert not market_data._warehouse_is_fresh("THYAO.IS", df.iloc[:-1], _tr(10, 30))  # seans açık, bugün yok
+    assert not market_data._warehouse_is_fresh("THYAO.IS", df.iloc[:-3], _tr(9, 30))   # birkaç gün eski
+    assert not market_data._warehouse_is_fresh("^VIX", df, _tr(10, 30))                # küresel: hep canlı
+
+
+def test_open_bar_not_written_to_warehouse():
+    df = _intraday_df(500.0)
+    assert len(market_data._without_open_bar(df, _tr(11, 0))) == len(df) - 1
+    assert len(market_data._without_open_bar(df, _tr(18, 30))) == len(df)
+
+
+def test_stale_warehouse_falls_back_to_live(monkeypatch):
+    import sys, types
+    from config.settings import settings
+    stale = _intraday_df(500.0).iloc[:-3]
+    live = _intraday_df(500.0).rename(columns=str.title)
+    written = []
+
+    class WH:
+        def get_ohlcv(self, t, period="1y"):
+            return stale
+
+        def upsert_ohlcv(self, t, df):
+            written.append(len(df))
+
+    monkeypatch.setattr("tools.data_warehouse.get_warehouse", lambda: WH())
+    fake_yf = types.SimpleNamespace(Ticker=lambda t: types.SimpleNamespace(history=lambda **k: live))
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+    object.__setattr__(settings, "use_local_warehouse", True)
+    try:
+        out = market_data.fetch_price_history("THYAO.IS", now=_tr(11, 0))
+    finally:
+        object.__setattr__(settings, "use_local_warehouse", False)
+    assert out.index[-1].date().isoformat() == "2026-11-24"  # canlı veri döndü
+    assert written == [len(live) - 1]                         # yarım mum ambara yazılmadı

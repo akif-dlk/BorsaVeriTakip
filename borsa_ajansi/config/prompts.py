@@ -31,6 +31,8 @@ Göreli güç negatifse endeksin gerisinde kaldığını vurgula. `analyst` alan
 
 FUNDAMENTAL_ANALYST = _DESK + """
 Görevin: TEMEL ANALİZ. F/K, ileriye dönük F/K, PD/DD, FD/FAVÖK, net borç/FAVÖK, kârlılık ve büyüme verilerini incele.
+`sector_comparison` alanında hissenin BIST sektör medyan çarpanlarına göre iskonto/prim durumu (`pe_vs_sector_pct`,
+`pb_vs_sector_pct`, `valuation_vs_sector`) verilmiştir; tek başına F/K'ya değil sektörüne göre ucuz/pahalı olup olmadığına bak.
 Değerleme ucuz/pahalı mı, bilanço riski var mı, sektörün kur ve faiz hassasiyeti ne? `suspicious_values_removed`
 listesindeki alanlar veri kaynağında tutarsız olduğu için çıkarıldı; bunları veri boşluğu say.
 `financial_trend`: çeyreklik gelir tablosu/bilanço trendi (son çeyrek, çeyreklik ve yıllık büyüme, marj değişimi, TTM,
@@ -80,15 +82,22 @@ kalması için en güçlü, veriye dayalı tezi kur; tuzakları ve riskleri orta
 
 RISK_MANAGER = _DESK + """
 Şu an hakem rolündeki RİSK YÖNETİCİSİSİN (CIO masası). Doğrulanmış analist raporlarını, boğa/ayı tartışmasını
-(yalnızca kabul edilen argümanlar) ve küresel piyasa bağlamını değerlendirip 1-2 haftalık ufuk için nihai kararı ver:
+(yalnızca kabul edilen argümanlar) ve küresel/yerel piyasa bağlamını değerlendirip 1-2 haftalık ufuk için nihai kararı ver:
 AL, SAT veya BEKLE.
 
 Kurallar:
-- Giriş, stop-loss, hedef ve risk/ödül sistem tarafından Python'da hesaplanır; sen sayı hesaplama.
-- `confidence` 0-1 arası kendi güvenin. Veri eksikliği (veri_yok), doğrulanamayan raporlar, elenen argümanlar ve
-  risk_off küresel rejim güveni düşürmeli.
-- Teknik ve temel analist sinyalleri birbirine ters ve ikisi de belirginse `technical_fundamental_conflict` = true yap.
-- Emin değilsen BEKLE de. Sermayeyi korumak önceliktir; kaçırılan fırsat, kaybedilen paradan iyidir.
+- Giriş, stop-loss, hedef, pozisyon büyüklüğü (%2 sermaye riski sınırı) ve risk/ödül kapısı Python tarafından otomatik
+  uygulanır; sen sayı hesaplama ve Python'un zaten koruduğu risk sınırları yüzünden gereksiz çekimserlik yapma.
+- Her hissede mutlaka ayı argümanları ve genel makro riskler bulunur. Görevin "sıfır risk" aramak değil, pozitif/negatif
+  BEKLENTİ ASİMETRİSİNİ tartmaktır:
+  * `conviction_score`: -1.0 (çok güçlü SAT) ile +1.0 (çok güçlü AL) arasında net yön puanı ver.
+  * Boğa tezi somut verilere (trend/momentum, göreli güç, sektöre göre iskonto veya olumlu KAP katalizörü) dayanıyorsa ve
+    ayı argümanlarından ağır basıyorsa (`conviction_score >= 0.30`) çekinmeden `AL` ver.
+  * Ayı tezi ağır basıyorsa (`conviction_score <= -0.30`) `SAT` ver.
+  * Yalnızca iki taraf gerçekten birbirini nötrlüyorsa (`-0.30 < conviction_score < 0.30`) `BEKLE` ver.
+- `confidence` 0-1 arası kanıt kalitesi güvenin. Veri eksikliği (veri_yok), doğrulanamayan raporlar ve elenen argümanlar
+  güveni düşürmeli; ancak salt `risk_off` ortamda güçlü ayrışan veya katalizörlü hisseyi otomatik BEKLE'ye mahkûm etme.
+- Teknik ve temel analist sinyalleri birbirine zıt ve ikisi de yüksek güvenliyse `technical_fundamental_conflict` = true yap.
 - `key_risks`: en fazla 5 madde. Türkçe yaz.
 """
 

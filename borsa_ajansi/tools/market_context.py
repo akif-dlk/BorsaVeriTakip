@@ -62,7 +62,29 @@ def build_global_context(fetcher: Callable[[str, str], pd.DataFrame] = fetch_pri
         out["global_risk_regime"] = "risk_off" if vix >= 25 or spx <= -3 else "risk_on" if vix < 18 and spx > 0 else "notr"
     else:
         out["global_risk_regime"] = VERI_YOK
+    out.update(compute_bist_regime(out))
     return out
+
+
+def compute_bist_regime(ctx: dict[str, Any]) -> dict[str, Any]:
+    """BIST100, XBANK ve küresel risk iştahına göre yerel piyasa rejimi ve dinamik risk çarpanı (Python)."""
+    bist = ctx.get("bist100") or {}
+    bank = ctx.get("bist_banka") or {}
+    glob = ctx.get("global_risk_regime", VERI_YOK)
+    if bist.get("status") != "ok":
+        return {"bist_regime": VERI_YOK, "recommended_risk_mult": 1.0}
+
+    above_ma50 = bist.get("above_ma50")
+    ch5 = bist.get("change_5d_pct")
+    bank_ch5 = bank.get("change_5d_pct") if bank.get("status") == "ok" else 0.0
+
+    bearish_bist = above_ma50 is False
+    bank_selloff = isinstance(bank_ch5, (int, float)) and bank_ch5 <= -4.0
+    if glob == "risk_off" or bearish_bist or bank_selloff:
+        return {"bist_regime": "defansif", "recommended_risk_mult": 0.5}
+    if above_ma50 is True and glob != "risk_off" and isinstance(ch5, (int, float)) and ch5 >= 0:
+        return {"bist_regime": "boga", "recommended_risk_mult": 1.0}
+    return {"bist_regime": "notr", "recommended_risk_mult": 0.75}
 
 
 def get_global_context(fetcher: Callable[[str, str], pd.DataFrame] = fetch_price_history) -> dict[str, Any]:

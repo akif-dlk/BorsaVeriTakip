@@ -51,8 +51,14 @@ def format_report(state: dict[str, Any]) -> str:
     lines = [
         f"{EMOJI[f.decision]} {f.ticker} — KARAR: {f.decision}",
         f"Tarih: {f.data_date} | Kapanış: {f.close if f.close is not None else 'veri_yok'}",
-        f"Güven: %{f.confidence * 100:.0f} (ham %{f.raw_confidence * 100:.0f}) | Hakem: {f.llm_decision}, kazanan taraf: {f.winning_side}",
+        f"Güven: %{f.confidence * 100:.0f} (ham %{f.raw_confidence * 100:.0f}) | Yön skoru: {f.conviction_score:+.2f} | Hakem: {f.llm_decision} ({f.winning_side})",
     ]
+    sec = ((state.get("bundle") or {}).get("fundamentals") or {}).get("sector_comparison")
+    if isinstance(sec, dict) and sec.get("valuation_vs_sector") not in (None, "veri_yok"):
+        lines.append(
+            f"Sektör kıyası ({sec['bist_sector_group']}): {sec['valuation_vs_sector']} "
+            f"(F/K farkı: {sec['pe_vs_sector_pct']}%, PD/DD farkı: {sec['pb_vs_sector_pct']}%)"
+        )
     if f.trade_plan:
         p = f.trade_plan
         lines += [

@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS sim_trades (
     entry_price REAL NOT NULL,
     entry_date TEXT NOT NULL,
     stop_loss REAL NOT NULL,
+    initial_stop REAL,
     target REAL NOT NULL,
     entry_commission REAL NOT NULL,
     confidence REAL,
@@ -129,13 +130,15 @@ def remaining_rr(trade: dict, price: float) -> float:
     return max(0.0, (trade["target"] - price) / (price - trade["stop_loss"]))
 
 
-def size_position(equity: float, cash: float, price: float, stop: float, max_value: float | None = None) -> int:
-    """Risk bazlı adet hesabı (tam sayı lot). max_value: kademe bütçesi (TL)."""
+def size_position(equity: float, cash: float, price: float, stop: float, max_value: float | None = None,
+                  risk_mult: float = 1.0) -> int:
+    """Risk bazlı adet hesabı (tam sayı lot). max_value: kademe bütçesi (TL); risk_mult: rejim risk çarpanı."""
     fill = price * (1 + settings.sim_slippage_pct / 100)
     risk_per_share = fill - stop
     if risk_per_share <= 0 or fill <= 0:
         return 0
-    by_risk = math.floor(equity * settings.sim_risk_per_trade_pct / 100 / risk_per_share)
+    eff_risk_pct = settings.sim_risk_per_trade_pct * max(0.1, min(1.5, risk_mult))
+    by_risk = math.floor(equity * eff_risk_pct / 100 / risk_per_share)
     by_cap = math.floor(equity * settings.sim_max_position_pct / 100 / fill)
     by_cash = math.floor(cash / (fill * (1 + settings.sim_commission_pct / 100)))
     by_budget = math.floor(max_value / (fill * (1 + settings.sim_commission_pct / 100))) \
@@ -157,6 +160,15 @@ class PaperTrader:
         self.progress: Callable[[str], None] = lambda msg: None
         with self._conn() as c:
             c.executescript(SCHEMA)
+            for sql in (
+                "ALTER TABLE sim_runs ADD COLUMN last_yield_date TEXT",
+                "ALTER TABLE sim_runs ADD COLUMN ppf_earned REAL DEFAULT 0",
+                "ALTER TABLE sim_trades ADD COLUMN initial_stop REAL",
+            ):
+                try:
+                    c.execute(sql)
+                except sqlite3.OperationalError:
+                    pass
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.db_path)
@@ -241,9 +253,9 @@ class PaperTrader:
             comm = round(fill * qty * settings.sim_commission_pct / 100, 2)
             c.execute("UPDATE sim_runs SET cash = cash - ? WHERE id=?", (fill * qty + comm, run["id"]))
             c.execute(
-                "INSERT INTO sim_trades (run_id, ticker, qty, entry_price, entry_date, stop_loss, target, entry_commission, "
-                "confidence, rationale, status, last_bar_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (run["id"], ticker, qty, fill, self.clock().isoformat(), stop, target, comm, confidence, rationale,
+                "INSERT INTO sim_trades (run_id, ticker, qty, entry_price, entry_date, stop_loss, initial_stop, target, entry_commission, "
+                "confidence, rationale, status, last_bar_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run["id"], ticker, qty, fill, self.clock().isoformat(), stop, stop, target, comm, confidence, rationale,
                  "open", self.clock().isoformat()))
             return self._event(c, run["id"], f"🟢 ALIŞ {ticker}: {qty} adet @ {fill:.2f} = {fill * qty:,.0f} TL "
                                              f"(stop {stop:.2f}, hedef {target:.2f}, komisyon {comm:.2f})")
@@ -264,27 +276,69 @@ class PaperTrader:
             return self._event(c, trade["run_id"], f"{icon} SATIŞ {trade['ticker']}: {trade['qty']} adet @ {fill:.2f} "
                                                    f"({reason}) → K/Z {pnl:+,.0f} TL (%{pnl / cost * 100:+.2f})")
 
+    def _accrue_cash_yield(self, run: dict) -> str | None:
+        """Boştaki nakde günlük Para Piyasası Fonu (PPF) getirisi işletir (0 ise devre dışı)."""
+        rate = settings.sim_cash_daily_yield_pct
+        if rate <= 0:
+            return None
+        today = self.clock()
+        last_str = run.get("last_yield_date") or run["start_date"]
+        last_d = date.fromisoformat(last_str)
+        if today <= last_d:
+            return None
+        # İş günü sayısı kadar bileşik PPF getirisi
+        bdays = sum(1 for i in range(1, (today - last_d).days + 1) if (last_d + timedelta(days=i)).weekday() < 5)
+        if bdays <= 0:
+            with self._conn() as c:
+                c.execute("UPDATE sim_runs SET last_yield_date=? WHERE id=?", (today.isoformat(), run["id"]))
+            return None
+        with self._conn() as c:
+            cash = c.execute("SELECT cash FROM sim_runs WHERE id=?", (run["id"],)).fetchone()["cash"]
+            if cash <= 0:
+                c.execute("UPDATE sim_runs SET last_yield_date=? WHERE id=?", (today.isoformat(), run["id"]))
+                return None
+            gain = round(cash * (((1 + rate / 100) ** bdays) - 1), 2)
+            c.execute(
+                "UPDATE sim_runs SET cash = cash + ?, ppf_earned = COALESCE(ppf_earned, 0) + ?, last_yield_date = ? WHERE id=?",
+                (gain, gain, today.isoformat(), run["id"]),
+            )
+            if gain >= 1.0:
+                return self._event(c, run["id"], f"🏦 PPF nakit getirisi ({bdays} iş günü): +{gain:,.2f} TL")
+        return None
+
     # ------------------------------------------------------------- günlük döngü
     def check_exits(self) -> list[str]:
-        """Giriş gününden sonraki günlük barlarla stop/hedef kontrolü."""
+        """Giriş gününden sonraki günlük barlarla stop/hedef/başabaş kontrolü + PPF nakit getirisi."""
         run = self.active_run()
         if not run:
             return []
         msgs = []
+        if ppf_msg := self._accrue_cash_yield(run):
+            msgs.append(ppf_msg)
+        be_r = settings.sim_breakeven_r
         for t in self.open_trades(run["id"]):
             last_seen = date.fromisoformat(t["last_bar_date"])
             bars = self.feed.daily(t["ticker"], last_seen)
             bars = bars[[d > last_seen for d in bars.index]] if not bars.empty else bars
             exited = False
+            cur_stop = float(t["stop_loss"])
+            init_stop = float(t.get("initial_stop") or cur_stop)
+            init_risk = max(0.01, float(t["entry_price"]) - init_stop)
             for d, b in bars.iterrows():
-                if b["low"] <= t["stop_loss"]:
-                    msgs.append(self.sell(t, min(b["open"], t["stop_loss"]), "stop-loss", d))
+                if b["low"] <= cur_stop:
+                    msgs.append(self.sell(t, min(b["open"], cur_stop), "stop-loss", d))
                     exited = True
                     break
                 if b["high"] >= t["target"]:
                     msgs.append(self.sell(t, max(b["open"], t["target"]), "hedef", d))
                     exited = True
                     break
+                # 1.5R başabaş (breakeven) stop kilidi — 0 LLM çağrısı
+                if be_r > 0 and cur_stop < t["entry_price"] and b["high"] >= t["entry_price"] + be_r * init_risk:
+                    cur_stop = round(t["entry_price"] * (1 + 2 * settings.sim_commission_pct / 100), 4)
+                    with self._conn() as c:
+                        c.execute("UPDATE sim_trades SET stop_loss=? WHERE id=?", (cur_stop, t["id"]))
+                        msgs.append(self._event(c, run["id"], f"🛡️ {t['ticker']} {be_r}R görüldü → stop başabaşa çekildi ({cur_stop:.2f})"))
             if not exited and not bars.empty:
                 with self._conn() as c:
                     c.execute("UPDATE sim_trades SET last_bar_date=? WHERE id=?", (bars.index[-1].isoformat(), t["id"]))
@@ -319,6 +373,12 @@ class PaperTrader:
 
         # 1) Açık pozisyonlar: SAT -> kapat, AL -> stop'u yukarı çek (asla aşağı değil); güveni güncelle
         for t in self.open_trades(run["id"]):
+            if settings.sim_skip_unchanged_reanalysis:
+                p_now = self.feed.last(t["ticker"])
+                # Fiyat stop'a tehlikeli yaklaşmadıysa ve girişten +%5'ten fazla uzaklaşmadıysa LLM kotası harcama
+                if p_now is not None and t["stop_loss"] * 1.025 < p_now < t["entry_price"] * 1.05:
+                    msgs.append(f"⚡ {t['ticker']}: anlamlı kırılım yok ({p_now:.2f}), LLM kotası korundu")
+                    continue
             self.progress(f"🔁 Açık pozisyon {t['ticker']} yeniden değerlendiriliyor...")
             try:
                 f = self.analyze_fn(t["ticker"])["final"]
@@ -399,7 +459,8 @@ class PaperTrader:
         price = self.feed.last(tk)
         if price is None:
             return [f"⚠️ {tk}: güncel fiyat yok"]
-        if price > plan.entry_high * 1.01:
+        chase_mult = 1.0 + settings.sim_entry_chase_pct / 100.0
+        if price > plan.entry_high * chase_mult:
             return [f"⏸️ {tk}: fiyat {price:.2f} giriş bölgesinin ({plan.entry_high:.2f}) üstünde, kovalanmadı"]
         if price <= plan.stop_loss:
             return [f"⏸️ {tk}: fiyat stop seviyesinin altında, alım yok"]
@@ -470,8 +531,9 @@ class PaperTrader:
         if bench_ret is not None:
             lines.append(f"Endekse göre fark: {ret - bench_ret:+.2f} puan")
         with self._conn() as c:
-            cash = c.execute("SELECT cash FROM sim_runs WHERE id=?", (run["id"],)).fetchone()["cash"]
-        lines.append(f"Nakit: {cash:,.0f} TL")
+            row_r = c.execute("SELECT cash, COALESCE(ppf_earned, 0) AS ppf FROM sim_runs WHERE id=?", (run["id"],)).fetchone()
+            cash, ppf_earned = row_r["cash"], row_r["ppf"]
+        lines.append(f"Nakit: {cash:,.0f} TL" + (f" (PPF katkısı: +{ppf_earned:,.0f} TL)" if ppf_earned >= 1 else ""))
 
         opens = self.open_trades(run["id"])
         if opens:

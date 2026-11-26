@@ -21,8 +21,11 @@ copy .env.example .env   # anahtarları doldur
 ```
 
 ## Çalıştırma
-- `baslat.bat` dosyasına çift tıkla → Telegram botu + zamanlayıcı (pencere açık kaldığı sürece çalışır).
-- CLI: `.venv\Scripts\python.exe main.py analiz THYAO`
+- **3 Yıllık Yerel Veri Seti İndir / Güncelle (0 LLM):** `.venv\Scripts\python.exe main.py veri-cek --years 3`
+  (`data/market_warehouse.db` + `data/bist100_3y_daily.csv` oluşturur; sonraki çalışmalarda yalnızca eksik günleri çeker)
+- **3 Yıllık Deterministik Backtest (0 LLM):** `.venv\Scripts\python.exe main.py backtest --days 750`
+- `baslat.bat` dosyasına çift tıkla → Telegram botu + zamanlayıcı (18:20 otomatik veri senkronizasyonu dahil).
+- CLI Analiz: `.venv\Scripts\python.exe main.py analiz THYAO`
 - Testler: `.venv\Scripts\python.exe -m pytest` (API'siz) · `-m network` (canlı veri) · `-m llm` (gerçek Claude)
 
 ## Telegram komutları
@@ -30,9 +33,11 @@ copy .env.example .env   # anahtarları doldur
 |---|---|
 | `/analiz THYAO` | 3 kademeli tam analiz |
 | `/gundem` | Piyasa + makro + KAP özeti |
-| `/gecmis` | Tahminler ve 5/10 gün başarı oranı |
+| `/gecmis` | Tahminler ve 5/10 gün başarı + BIST100 alfa oranı |
+| `/veri_guncelle` | 3 yıllık BIST100 + makro yerel veri setini güncelle (0 LLM) |
+| `/backtest [gün]` | Yerel veri seti üzerinde 0-LLM tarihsel strateji testi |
 | `/sim_baslat 10000 14` | Sanal portföyü başlat (gerçek para yok) |
-| `/portfoy` | Portföy değeri, K/Z, BIST100 kıyası |
+| `/portfoy` | Portföy değeri, K/Z, PPF katkısı, BIST100 kıyası |
 | `/sim_islem` | Tarama + işlem döngüsünü hemen çalıştır |
 | `/sim_log` | Son alım/satım olayları |
 | `/sim_durdur` | Simülasyonu bitir |

@@ -10,6 +10,33 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
+
+def _ensure_ascii_ca_bundle() -> None:
+    """Windows'ta klasör yolunda Türkçe/ASCII-dışı karakter (ör. 'Masaüstü') olduğunda
+    yfinance/curl_cffi libcurl katmanı certifi sertifikasını okuyamayıp SSLError üretir.
+    Sertifikayı salt-ASCII TEMP dizinine kopyalayarak tüm süreci korur."""
+    if os.name != "nt":
+        return
+    try:
+        import certifi
+        import shutil
+        import tempfile
+
+        src = certifi.where()
+        if all(ord(ch) < 128 for ch in src):
+            return
+        dst = Path(tempfile.gettempdir()) / "borsa_ajansi_cacert.pem"
+        if not dst.exists() or dst.stat().st_size != Path(src).stat().st_size:
+            shutil.copyfile(src, dst)
+        if all(ord(ch) < 128 for ch in str(dst)):
+            os.environ.setdefault("CURL_CA_BUNDLE", str(dst))
+            os.environ.setdefault("SSL_CERT_FILE", str(dst))
+    except Exception:
+        pass
+
+
+_ensure_ascii_ca_bundle()
+
 VERI_YOK = "veri_yok"
 
 
@@ -112,8 +139,40 @@ class Settings:
     sim_eod_hour: int = field(default_factory=lambda: int(os.getenv("SIM_EOD_HOUR", "18")))
     sim_eod_minute: int = field(default_factory=lambda: int(os.getenv("SIM_EOD_MINUTE", "30")))
 
-    # KAP bildirim metinleri + faaliyet raporu/sunum okuma (her hisse için +2 LLM çağrısı, önbellekli)
+    # KAP bildirim metinleri + faaliyet raporu/sunum okuma
     documents_enabled: bool = field(default_factory=lambda: os.getenv("DOCUMENTS_ENABLED", "true").lower() == "true")
+    # false -> KAP ve PDF metinleri deterministik Python kurallarıyla özetlenir (0 LLM çağrısı!)
+    documents_use_llm: bool = field(default_factory=lambda: os.getenv("DOCUMENTS_USE_LLM", "true").lower() == "true")
+
+    # ---- Yerel Veri Ambarı (3 yıllık BIST100 + makro veri seti, 0 LLM) ----
+    warehouse_db_path: str = field(default_factory=lambda: os.getenv("WAREHOUSE_DB_PATH", str(BASE_DIR / "data" / "market_warehouse.db")))
+    warehouse_csv_path: str = field(default_factory=lambda: os.getenv("WAREHOUSE_CSV_PATH", str(BASE_DIR / "data" / "bist100_3y_daily.csv")))
+    use_local_warehouse: bool = field(default_factory=lambda: os.getenv("USE_LOCAL_WAREHOUSE", "true").lower() == "true")
+    data_sync_enabled: bool = field(default_factory=lambda: os.getenv("DATA_SYNC_ENABLED", "true").lower() == "true")
+    data_sync_hour: int = field(default_factory=lambda: int(os.getenv("DATA_SYNC_HOUR", "18")))
+    data_sync_minute: int = field(default_factory=lambda: int(os.getenv("DATA_SYNC_MINUTE", "45")))
+
+    # ---- LLM Kota Koruma & Akıllı Ön Eleme ----
+    # Aynı hisse+bar için önbellek süresi (sn); 0 = kapalı (ör. 14400 = 4 saat boyunca aynı analizi tekrar üretmez)
+    analysis_cache_ttl_s: float = field(default_factory=lambda: float(os.getenv("ANALYSIS_CACHE_TTL_S", "0")))
+    # true -> 4 analist tek birleşik yapılandırılmış LLM çağrısında çalışır (%75 analist kotası tasarrufu)
+    economy_single_call: bool = field(default_factory=lambda: os.getenv("ECONOMY_SINGLE_CALL", "false").lower() == "true")
+    # true -> açık pozisyonda anlamlı fiyat/teknik değişim yoksa sabah yeniden LLM çağrılmaz
+    sim_skip_unchanged_reanalysis: bool = field(default_factory=lambda: os.getenv("SIM_SKIP_UNCHANGED_REANALYSIS", "false").lower() == "true")
+    # true -> taramada R/Ö kapısından geçemeyecek adaylar LLM'e hiç gönderilmez
+    screen_prefilter_rr: bool = field(default_factory=lambda: os.getenv("SCREEN_PREFILTER_RR", "false").lower() == "true")
+    # true -> tarama kontenjanına aşırı satım dönüş / KAP katalizör adaylarını da dahil eder
+    screen_include_reversals: bool = field(default_factory=lambda: os.getenv("SCREEN_INCLUDE_REVERSALS", "false").lower() == "true")
+
+    # ---- Gelişmiş Simülasyon & Risk Kalibrasyonu ----
+    # Boşta bekleyen nakde günlük Para Piyasası Fonu (PPF) getirisi (ör. 0.10 = günde %0.10 ~ yıllık %44 bileşik)
+    sim_cash_daily_yield_pct: float = field(default_factory=lambda: float(os.getenv("SIM_CASH_DAILY_YIELD_PCT", "0.0")))
+    # Kâr 1.5R'ye ulaştığında stop-loss otomatik başabaş (giriş) seviyesine çekilir; 0 = kapalı
+    sim_breakeven_r: float = field(default_factory=lambda: float(os.getenv("SIM_BREAKEVEN_R", "0.0")))
+    # Giriş bölgesi üst sınır toleransı (%) — gecikmeli veride kaliteli sinyali kaçırmamak için
+    sim_entry_chase_pct: float = field(default_factory=lambda: float(os.getenv("SIM_ENTRY_CHASE_PCT", "1.0")))
+    # Piyasa risk-off / BIST defansif rejimdeyken işlem başı risk çarpanı (ör. 0.5 -> %2 yerine %1 risk)
+    sim_defensive_risk_mult: float = field(default_factory=lambda: float(os.getenv("SIM_DEFENSIVE_RISK_MULT", "1.0")))
 
     db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", str(BASE_DIR / "borsa_ajansi.db")))
 

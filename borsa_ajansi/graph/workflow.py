@@ -161,7 +161,15 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
             return {"final": risk_manager.fallback_decision(*args, reason="LLM erişimi kesildi")}
         try:
             extra = (0.10, "tartışma LLM hatasıyla erken kesildi") if state.get("debate_failed") else None
-            return {"final": risk_manager.decide(llm, *args, extra=extra)}
+            calib = None
+            if data_provider is default_data_provider:
+                try:
+                    from memory.db import PredictionStore
+
+                    calib = PredictionStore().calibration_summary()
+                except Exception:
+                    calib = None
+            return {"final": risk_manager.decide(llm, *args, extra=extra, calibration=calib)}
         except LLMError as exc:
             log.error("Risk Yöneticisi başarısız: %s", exc)
             return {"final": risk_manager.fallback_decision(*args, reason=f"Risk Yöneticisi LLM hatası: {exc}")}
@@ -183,10 +191,62 @@ def build_graph(llm: LLM, data_provider: Callable[[str], dict] = default_data_pr
     return g.compile()
 
 
+def _serialize_state(state: AnalysisState) -> dict[str, Any]:
+    return {
+        "ticker": state["ticker"],
+        "bundle": state.get("bundle", {}),
+        "reports": {k: v.model_dump() for k, v in state.get("reports", {}).items()},
+        "checks": {k: v.model_dump() for k, v in state.get("checks", {}).items()},
+        "attempts": state.get("attempts", {}),
+        "debate": [v.model_dump() for v in state.get("debate", [])],
+        "round": state.get("round", 0),
+        "llm_down": state.get("llm_down", False),
+        "debate_failed": state.get("debate_failed", False),
+        "final": state["final"].model_dump(),
+    }
+
+
+def _deserialize_state(raw: dict[str, Any]) -> AnalysisState:
+    return {
+        "ticker": raw["ticker"],
+        "bundle": raw.get("bundle", {}),
+        "reports": {k: AnalystReport.model_validate(v) for k, v in raw.get("reports", {}).items()},
+        "checks": {k: FactCheckResult.model_validate(v) for k, v in raw.get("checks", {}).items()},
+        "attempts": raw.get("attempts", {}),
+        "debate": [ValidatedTurn.model_validate(v) for v in raw.get("debate", [])],
+        "round": raw.get("round", 0),
+        "llm_down": raw.get("llm_down", False),
+        "debate_failed": raw.get("debate_failed", False),
+        "final": FinalDecision.model_validate(raw["final"]),
+    }
+
+
 def run_analysis(ticker: str, llm: LLM, data_provider: Callable[[str], dict] = default_data_provider,
                  progress: ProgressFn | None = None,
                  document_provider: DocumentProvider | None = None) -> AnalysisState:
     ticker = market_data.normalize_ticker(ticker)
+    use_cache = settings.analysis_cache_ttl_s > 0 and data_provider is default_data_provider
+    cache = None
+    cache_key = f"analysis:v1:{ticker}"
+    if use_cache:
+        from memory.cache import DocCache
+
+        try:
+            cache = DocCache(settings.db_path)
+            if hit := cache.get(cache_key, max_age_s=settings.analysis_cache_ttl_s):
+                if progress:
+                    progress(f"⚡ {ticker} son analiz önbellekten yüklendi (0 LLM çağrısı)")
+                return _deserialize_state(hit)
+        except Exception as exc:
+            log.debug("Analiz önbelleği okunamadı: %s", exc)
+
     graph = build_graph(llm, data_provider, progress, document_provider)
     # recursion_limit: döngüler zaten sınırlı; ek emniyet kemeri
-    return graph.invoke({"ticker": ticker}, config={"recursion_limit": 40})
+    state = graph.invoke({"ticker": ticker}, config={"recursion_limit": 40})
+
+    if cache is not None and not state.get("llm_down") and "final" in state:
+        try:
+            cache.set(cache_key, _serialize_state(state))
+        except Exception as exc:
+            log.debug("Analiz önbelleği yazılamadı: %s", exc)
+    return state

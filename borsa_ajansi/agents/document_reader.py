@@ -34,6 +34,145 @@ _PRES_NAME = re.compile(r"sunum|presentation|investor|yatırımcı|yatirimci|bek
 _ACT_NAME = re.compile(r"faaliyet|activity", re.I)
 _EXCL_NAME = re.compile(r"ifrs|tfrs|tms|denetim|trafik|traffic|finansal tablo|financial statement|dipnot", re.I)
 
+# Deterministik (0-LLM) KAP ve faaliyet raporu sınıflandırma kalıpları
+_POS_KAP = re.compile(
+    r"ihale|yeni iş|sözleşme|sipariş|teşvik|geri alım|temettü|kar payı|bedelsiz|kapasite artış|"
+    r"yatırım|ortaklık|onaylan|kazanmış|imzalanmış|teslimat|ihracat",
+    re.I,
+)
+_NEG_KAP = re.compile(
+    r"ceza|dava|iptal|fesih|zarar|durdurma|üretim duruş|soruşturma|konkordato|reddedil|erteleme|grev",
+    re.I,
+)
+_HIGH_MAT_KAP = re.compile(
+    r"ihale|yeni iş|sözleşme|sipariş|geri alım|temettü|kar payı|bedelsiz|bedelli|sermaye artırım|"
+    r"ceza|dava|satın alma|birleşme|teşvik",
+    re.I,
+)
+_HORIZON_RE = re.compile(r"\b(202[6-9]|203\d(?:\s*-\s*203\d)?)\b")
+_CAT_CAPEX = re.compile(r"yatırım|kapasite|fabrika|tesis|capex|santral|hattı", re.I)
+_CAT_RISK = re.compile(r"risk|belirsizlik|baskı|daralma|maliyet artış|kur riski|jeopolitik", re.I)
+_CAT_TARGET = re.compile(r"hedef|beklenti|öngör|guidance|target|outlook|ciro|marj|büyüme", re.I)
+
+
+def build_kap_deterministic(
+    symbol: str, disclosures: list[dict] | None, get, cache: DocCache | None, today: datetime
+) -> dict[str, Any]:
+    """KAP bildirimlerini LLM kullanmadan, doğrudan metin çıkarımı ve kural tabanlı etki puanlamasıyla özetler."""
+    if disclosures is None:
+        return {"status": VERI_YOK, "reason": "KAP'a erişilemedi"}
+    recent = [
+        d
+        for d in _recent(disclosures, KAP_LOOKBACK_DAYS, today)
+        if d.get("class") != "DG" and not _SKIP_TITLES.search(d.get("title", ""))
+    ][:KAP_MAX_DISCLOSURES]
+    if not recent:
+        return {
+            "status": "ok",
+            "source": "KAP_deterministic",
+            "disclosure_count": 0,
+            "notes": [],
+            "note": f"son {KAP_LOOKBACK_DAYS} günde önemli bildirim yok",
+        }
+
+    key = f"kapdet:{symbol}:" + ",".join(str(d["index"]) for d in recent)
+    if cache and (hit := cache.get(key)):
+        return hit
+
+    notes = []
+    for d in recent:
+        det = kap.disclosure_detail(d["index"], get)
+        raw_txt = (det or {}).get("text") or f"{d.get('title', '')} — {d.get('summary', '')}"
+        combined = f"{d.get('title', '')} {d.get('summary', '')} {raw_txt}"
+        pos = len(_POS_KAP.findall(combined))
+        neg = len(_NEG_KAP.findall(combined))
+        impact = "olumlu" if pos > neg else "olumsuz" if neg > pos else "notr"
+        mat = "yuksek" if _HIGH_MAT_KAP.search(combined) else ("orta" if (pos or neg) else "dusuk")
+        # Doğrudan kaynak metnin ilk anlamlı 220 karakteri -> sıfır halüsinasyon, sıfır LLM
+        clean_snip = re.sub(r"\s+", " ", raw_txt).strip()[:220]
+        notes.append(
+            {
+                "date": d["date"],
+                "title": d["summary"] or d["title"],
+                "impact": impact,
+                "materiality": mat,
+                "summary": clean_snip,
+            }
+        )
+    out = {
+        "status": "ok",
+        "source": "KAP_deterministic",
+        "disclosure_count": len(recent),
+        "notes": notes,
+        "rejected_notes": 0,
+    }
+    if cache:
+        cache.set(key, out)
+    return out
+
+
+def build_outlook_deterministic(
+    symbol: str, disclosures: list[dict] | None, get, cache: DocCache | None, today: datetime
+) -> dict[str, Any]:
+    """Faaliyet raporu / yatırımcı sunumu PDF'lerinden geleceğe dönük cümleleri 0 LLM ile çıkarır."""
+    if disclosures is None:
+        return {"status": VERI_YOK, "reason": "KAP'a erişilemedi"}
+    docs = find_outlook_documents(disclosures, get, today)
+    if not docs:
+        return {"status": VERI_YOK, "reason": f"son {OUTLOOK_LOOKBACK_DAYS} günde faaliyet raporu / sunum bulunamadı"}
+
+    key = f"outlookdet:{symbol}:" + ",".join(d["id"] for d in docs)
+    if cache and (hit := cache.get(key)):
+        return hit
+
+    items: list[dict[str, str]] = []
+    used_docs = []
+    for d in docs:
+        data = kap.download_attachment(d["id"], get)
+        sel = kap.select_outlook_text(kap.pdf_pages(data), OUTLOOK_TEXT_BUDGET) if data else ""
+        if not sel:
+            continue
+        used_docs.append({"name": d["name"], "date": d["date"]})
+        clean_sel = re.sub(r"\[sayfa \d+\]\s*", "", sel)
+        sentences = re.split(r"(?<=[.!?])\s+", clean_sel)
+        scored_sents = []
+        for s in sentences:
+            s = s.strip()
+            if not (35 <= len(s) <= 260):
+                continue
+            kw_hits = len(kap._KW_RE.findall(s))
+            if kw_hits == 0:
+                continue
+            yr_bonus = 2 if _HORIZON_RE.search(s) else 0
+            scored_sents.append((kw_hits + yr_bonus, s))
+        for _, s in sorted(scored_sents, key=lambda x: x[0], reverse=True)[:5]:
+            hm = _HORIZON_RE.search(s)
+            cat = (
+                "yatirim_kapasite"
+                if _CAT_CAPEX.search(s)
+                else "risk"
+                if _CAT_RISK.search(s)
+                else "hedef_beklenti"
+                if _CAT_TARGET.search(s)
+                else "strateji"
+            )
+            items.append(
+                {
+                    "category": cat,
+                    "statement": s,
+                    "horizon": hm.group(1) if hm else "belirtilmemiş",
+                    "source": d["name"],
+                }
+            )
+    items = items[:8]
+    if not items:
+        return {"status": VERI_YOK, "reason": "PDF içinde geleceğe dönük cümle bulunamadı"}
+    summary = f"{len(used_docs)} rapordan {len(items)} geleceğe dönük madde doğrudan çıkarıldı (0 LLM)."
+    out = {"status": "ok", "documents": used_docs, "summary": summary, "items": items, "rejected_items": 0}
+    if cache:
+        cache.set(key, out)
+    return out
+
 
 # ---------------------------------------------------------------------------
 # Programatik doğrulama
@@ -189,10 +328,12 @@ def build_outlook(llm: LLM, symbol: str, disclosures: list[dict] | None, get, ca
     return out
 
 
-def get_documents(llm: LLM, ticker: str, get: Callable = kap.http_get, cache: DocCache | None = None,
-                  today: datetime | None = None) -> dict[str, Any]:
+def get_documents(llm: LLM | None, ticker: str, get: Callable = kap.http_get, cache: DocCache | None = None,
+                  today: datetime | None = None, use_llm: bool | None = None) -> dict[str, Any]:
     symbol = kap.base_symbol(ticker)
     today = today or datetime.now()
+    if use_llm is None:
+        use_llm = bool(settings.documents_use_llm and llm is not None)
     if cache is None:
         try:
             cache = DocCache(settings.db_path)
@@ -204,6 +345,19 @@ def get_documents(llm: LLM, ticker: str, get: Callable = kap.http_get, cache: Do
         log.warning("KAP listesi alınamadı %s: %s", symbol, exc)
         disclosures = None
     out: dict[str, Any] = {}
+    if not use_llm:
+        pairs: tuple[tuple[str, Callable], ...] = (
+            ("kap", lambda sym, d, g, c, t: build_kap_deterministic(sym, d, g, c, t)),
+            ("outlook", lambda sym, d, g, c, t: build_outlook_deterministic(sym, d, g, c, t)),
+        )
+        for name, fn in pairs:
+            try:
+                out[name] = fn(symbol, disclosures, get, cache, today)
+            except Exception as exc:
+                log.exception("Deterministik belge hatası (%s/%s)", symbol, name)
+                out[name] = {"status": VERI_YOK, "reason": f"hata: {exc}"[:200]}
+        return out
+
     for name, fn in (("kap", build_kap_digest), ("outlook", build_outlook)):
         try:
             out[name] = fn(llm, symbol, disclosures, get, cache, today)

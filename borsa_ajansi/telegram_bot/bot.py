@@ -102,6 +102,8 @@ HELP = (
     "/analiz <HİSSE> — 3 kademeli tam analiz (ör. /analiz THYAO.IS)\n"
     "/gundem — günün piyasa/KAP özeti\n"
     "/gecmis — son tahminler ve başarı oranı\n"
+    "/veri_guncelle — BIST100 + makro yerel veri ambarını güncelle (0 LLM)\n"
+    "/backtest [gün] — yerel veri setinde 3 yıllık strateji testi (0 LLM)\n"
     "\n💼 Sanal portföy (gerçek para yok)\n"
     "/sim_baslat [tutar] [gün] — simülasyonu başlat (varsayılan 10000 TL, 14 gün)\n"
     "/portfoy — portföy durumu, K/Z ve BIST100 kıyası\n"
@@ -205,8 +207,9 @@ def build_gecmis_text(store: PredictionStore, limit: int = 10) -> str:
     lines += ["", "📊 Başarı oranı (AL/SAT)"]
     for h, s in store.stats().items():
         rate = f"%{s['success_rate'] * 100:.0f}" if s["success_rate"] is not None else "-"
+        alpha_r = f", alfa başarısı %{s['alpha_rate'] * 100:.0f}" if s.get("alpha_rate") is not None else ""
         avg = f", ort. getiri {s['avg_return_pct']:+.2f}%" if s["avg_return_pct"] is not None else ""
-        lines.append(f"• {h} işlem günü: {rate} ({s['n']} tahmin{avg})")
+        lines.append(f"• {h} işlem günü: {rate}{alpha_r} ({s['n']} tahmin{avg})")
     return "\n".join(lines)
 
 
@@ -337,6 +340,50 @@ async def cmd_sim_durdur(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                      "⏹️ Simülasyon durduruldu.\n\n" + await asyncio.to_thread(svc.trader.report, run["id"]))
 
 
+@authorized
+async def cmd_veri_guncelle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from tools.data_warehouse import get_warehouse
+
+    msg = update.effective_message
+    status = await msg.reply_text("📦 Yerel BIST100 + makro veri ambarı güncelleniyor (0 LLM çağrısı)...")
+    try:
+        res = await asyncio.to_thread(get_warehouse().sync_market_data, years=3.0)
+        await status.edit_text(
+            f"✅ Veri seti güncellendi ({res['symbols']} sembol, {res['total_rows']:,} bar, "
+            f"{res['min_date']} → {res['max_date']})."
+        )
+    except Exception as exc:
+        log.exception("Veri güncelleme hatası")
+        await status.edit_text(f"❌ Veri güncelleme hatası: {exc}")
+
+
+@authorized
+async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from simulation.backtest import format_backtest_report, run_backtest
+
+    msg = update.effective_message
+    days = int(context.args[0]) if (context.args and context.args[0].isdigit()) else 750
+    status = await msg.reply_text(f"⏳ Son {days} işlem günü için 0-LLM backtest çalışıyor...")
+    try:
+        res = await asyncio.to_thread(run_backtest, None, days)
+        await status.delete()
+        await _send_long(context.bot, msg.chat_id, format_backtest_report(res))
+    except Exception as exc:
+        log.exception("Backtest hatası")
+        await status.edit_text(f"❌ Backtest başarısız: {exc}")
+
+
+async def data_sync_job(app: Application) -> None:
+    """Seans kapanışı sonrası sessizce yerel veri ambarını günceller (0 LLM)."""
+    from tools.data_warehouse import get_warehouse
+
+    try:
+        res = await asyncio.to_thread(get_warehouse().sync_market_data, years=3.0)
+        log.info("Günlük veri botu tamamlandı: %s satır güncellendi", res.get("rows_upserted"))
+    except Exception as exc:
+        log.warning("Günlük veri botu hatası: %s", exc)
+
+
 async def sim_trade_job(app: Application) -> None:
     svc: Services = app.bot_data["services"]
     await run_sim_cycle(app.bot, svc, list(svc.allowed_ids), full=True)
@@ -355,6 +402,10 @@ def setup_scheduler(app: Application):
         sched.add_job(morning_report, "cron", day_of_week="mon-fri", hour=settings.report_hour,
                       minute=settings.report_minute, args=[app], id="morning_report", max_instances=1,
                       coalesce=True, misfire_grace_time=1800)
+    if settings.data_sync_enabled:
+        sched.add_job(data_sync_job, "cron", day_of_week="mon-fri", hour=settings.data_sync_hour,
+                      minute=settings.data_sync_minute, args=[app], id="data_sync", max_instances=1,
+                      coalesce=True, misfire_grace_time=3600)
     sched.add_job(sim_trade_job, "cron", day_of_week="mon-fri", hour=settings.sim_trade_hour,
                   minute=settings.sim_trade_minute, args=[app], id="sim_trade", max_instances=1,
                   coalesce=True, misfire_grace_time=1800)
@@ -378,6 +429,8 @@ def build_application(services: Services, token: str) -> Application:
                 BotCommand("analiz", "Hisse analizi: /analiz THYAO"),
                 BotCommand("gundem", "Günün piyasa özeti"),
                 BotCommand("gecmis", "Son tahminler ve başarı oranı"),
+                BotCommand("veri_guncelle", "3 yıllık yerel veri setini güncelle (0 LLM)"),
+                BotCommand("backtest", "3 yıllık strateji backtesti (0 LLM)"),
                 BotCommand("sim_baslat", "Sanal portföy başlat: /sim_baslat 10000 14"),
                 BotCommand("portfoy", "Sanal portföy durumu"),
                 BotCommand("sim_islem", "Tarama + işlem döngüsünü şimdi çalıştır"),
@@ -400,6 +453,8 @@ def build_application(services: Services, token: str) -> Application:
     app.add_handler(CommandHandler("analiz", cmd_analiz))
     app.add_handler(CommandHandler("gundem", cmd_gundem))
     app.add_handler(CommandHandler("gecmis", cmd_gecmis))
+    app.add_handler(CommandHandler("veri_guncelle", cmd_veri_guncelle))
+    app.add_handler(CommandHandler("backtest", cmd_backtest))
     app.add_handler(CommandHandler("sim_baslat", cmd_sim_baslat))
     app.add_handler(CommandHandler(["portfoy", "sim_rapor"], cmd_portfoy))
     app.add_handler(CommandHandler("sim_islem", cmd_sim_islem))

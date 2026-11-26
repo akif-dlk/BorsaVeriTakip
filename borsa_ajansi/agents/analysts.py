@@ -8,8 +8,8 @@ from typing import Any
 
 from agents.llm import LLM, LLMError
 from config import prompts
-from config.settings import VERI_YOK
-from verification.schemas import AnalystName, AnalystReport
+from config.settings import VERI_YOK, settings
+from verification.schemas import AnalystName, AnalystReport, BatchAnalystReports
 
 log = logging.getLogger(__name__)
 
@@ -108,9 +108,33 @@ def failed_report(analyst: AnalystName, ticker: str, error: str) -> AnalystRepor
     )
 
 
+def run_analysts_batch(llm: LLM, ticker: str, bundle: dict[str, Any]) -> dict[str, AnalystReport]:
+    """Ekonomik mod: 4 analist raporunu 4 ayrı istek yerine TEK bir yapılandırılmış LLM çağrısında üretir."""
+    raw_all = {name: raw_data_for(name, bundle) for name in ANALYSTS}
+    system = (
+        prompts._DESK
+        + "\nAşağıda hissenin 4 ayrı uzmanlık alanı (`teknik`, `temel`, `gundem`, `duygu`) için hazırlanmış ham JSON "
+        "verileri yer alıyor. Her analist alanı için YALNIZCA kendi ham veri sözlüğündeki alan adlarını (`claims.field`) "
+        "ve değerlerini AYNEN kopyalayarak bağımsız birer `AnalystReport` üret.\n"
+        + prompts._COMMON_RULES
+    )
+    user = f"Hisse: {ticker}\n4 Analist Ham Verileri (JSON):\n{json.dumps(raw_all, ensure_ascii=False, default=str)}"
+    batch = llm.with_structured_output(BatchAnalystReports, tier="fast").invoke(system, user)
+    return {
+        name: getattr(batch, name).model_copy(update={"analyst": name, "ticker": ticker})
+        for name in ANALYSTS
+    }
+
+
 def run_analysts_parallel(llm: LLM, analysts: list[AnalystName], ticker: str, bundle: dict[str, Any],
                           feedback: dict[str, list[str]] | None = None) -> dict[str, AnalystReport]:
     feedback = feedback or {}
+
+    if settings.economy_single_call and not feedback and set(analysts) == set(ANALYSTS):
+        try:
+            return run_analysts_batch(llm, ticker, bundle)
+        except Exception as exc:
+            log.warning("Tek-çağrı analist modu başarısız, paralel moda düşülüyor: %s", exc)
 
     def _one(name: AnalystName) -> tuple[str, AnalystReport]:
         try:

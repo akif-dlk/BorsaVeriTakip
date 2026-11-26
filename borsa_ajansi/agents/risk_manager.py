@@ -86,8 +86,9 @@ def detect_conflict(reports: dict[str, AnalystReport]) -> bool:
     return opposite and min(t.confidence, f.confidence) >= CONFLICT_MIN_CONFIDENCE
 
 
-def build_risk_prompt(ticker, reports, checks, debate, penalties_reasons, context=None) -> str:
-    payload = {
+def build_risk_prompt(ticker, reports, checks, debate, penalties_reasons, context=None,
+                      calibration: dict[str, Any] | None = None) -> str:
+    payload: dict[str, Any] = {
         "ticker": ticker,
         "market_context": context or VERI_YOK,
         "analyst_reports": [{**r.model_dump(), "fact_check_passed": checks[n].passed if n in checks else False}
@@ -97,17 +98,22 @@ def build_risk_prompt(ticker, reports, checks, debate, penalties_reasons, contex
                     "rebuttals": v.turn.rebuttals} for v in debate],
         "data_quality_issues": penalties_reasons,
     }
+    if calibration:
+        payload["historical_calibration"] = calibration
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def decide(llm: LLM, ticker: str, bundle, reports, checks, debate,
-           extra: tuple[float, str] | None = None) -> FinalDecision:
+           extra: tuple[float, str] | None = None,
+           calibration: dict[str, Any] | None = None) -> FinalDecision:
     pen, pen_reasons = confidence_penalties(bundle, reports, checks, debate)
     if extra:
         pen += extra[0]
         pen_reasons = pen_reasons + [f"{extra[1]} (-{extra[0]:.2f})"]
     judgement = llm.with_structured_output(RiskJudgement, tier="reasoning").invoke(
-        prompts.RISK_MANAGER, build_risk_prompt(ticker, reports, checks, debate, pen_reasons, bundle.get("context")))
+        prompts.RISK_MANAGER,
+        build_risk_prompt(ticker, reports, checks, debate, pen_reasons, bundle.get("context"), calibration),
+    )
     return apply_gates(ticker, bundle, reports, judgement, pen, pen_reasons)
 
 
@@ -117,6 +123,16 @@ def apply_gates(ticker, bundle, reports, j: RiskJudgement, penalty: float, pen_r
     gates = list(pen_reasons)
     decision = j.decision
     plan = None
+
+    # Aşırı muhafazakârlık kalibrasyonu: LLM tartışmada açık galip ve yüksek conviction_score
+    # belirlediği halde alışkanlıkla BEKLE dediyse, Python kapılarından geçmek şartıyla yönü etkinleştirir.
+    if decision == "BEKLE" and not (j.technical_fundamental_conflict or detect_conflict(reports)):
+        if j.winning_side == "boga" and j.conviction_score >= 0.35 and conf >= settings.confidence_threshold:
+            decision = "AL"
+            gates.append(f"kalibrasyon: boğa üstünlüğü (conviction {j.conviction_score:+.2f}) -> AL adaylığı")
+        elif j.winning_side == "ayi" and j.conviction_score <= -0.35 and conf >= settings.confidence_threshold:
+            decision = "SAT"
+            gates.append(f"kalibrasyon: ayı üstünlüğü (conviction {j.conviction_score:+.2f}) -> SAT adaylığı")
 
     if decision != "BEKLE":
         if conf < settings.confidence_threshold:
@@ -137,8 +153,9 @@ def apply_gates(ticker, bundle, reports, j: RiskJudgement, penalty: float, pen_r
     close = ind.get("close")
     return FinalDecision(
         ticker=ticker, data_date=ind.get("date", VERI_YOK), decision=decision, llm_decision=j.decision,
-        raw_confidence=j.confidence, confidence=conf, winning_side=j.winning_side, rationale=j.rationale,
-        key_risks=j.key_risks, gate_reasons=gates, trade_plan=plan, close=close if _is_num(close) else None,
+        raw_confidence=j.confidence, confidence=conf, conviction_score=j.conviction_score,
+        winning_side=j.winning_side, rationale=j.rationale, key_risks=j.key_risks, gate_reasons=gates,
+        trade_plan=plan, close=close if _is_num(close) else None,
     )
 
 

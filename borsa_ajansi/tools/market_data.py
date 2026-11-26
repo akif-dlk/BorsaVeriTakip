@@ -37,18 +37,86 @@ def normalize_ticker(ticker: str) -> str:
     return t
 
 
-def fetch_price_history(ticker: str, period: str = "1y") -> pd.DataFrame:
-    """yfinance'ten OHLCV çeker. Hata/boş veri durumunda boş DataFrame döner (uydurma yok)."""
+def _prev_business_day(d: date) -> date:
+    d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+def expected_last_bar(now: datetime | None = None) -> date:
+    """BIST için şu an elde olması gereken en son günlük mumun tarihi.
+
+    Seans açıldıysa (hafta içi 10:00 sonrası) bugünün mumu, değilse bir önceki iş gününün mumu.
+    Resmî tatiller bilinmez: tatilde canlı veri de bugünü içermez, sadece fazladan bir ağ isteği olur.
+    """
+    now = (now or datetime.now(_TR)).astimezone(_TR)
+    if now.weekday() < 5 and now.time() >= _SESSION_OPEN:
+        return now.date()
+    return _prev_business_day(now.date())
+
+
+def _warehouse_is_fresh(ticker: str, df: pd.DataFrame, now: datetime | None = None) -> bool:
+    """Yerel ambar yalnızca BIST hissesi/endeksi için ve son mum beklenen tarihteyse kullanılır.
+
+    Küresel semboller (VIX, S&P, kur, emtia) farklı saat dilimlerinde işlem gördüğü ve 18:20 senkronunda
+    yarım mum yazılabildiği için her zaman canlı çekilir.
+    """
+    if df.empty or not ticker.upper().endswith(".IS"):
+        return False
+    last = df.index[-1]
+    last_d = last.date() if hasattr(last, "date") else last
+    return last_d >= expected_last_bar(now)
+
+
+def _without_open_bar(df: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
+    """Kapanmamış seansın yarım mumunu ambara yazmamak için çıkarır."""
+    if df.empty:
+        return df
+    last = df.index[-1]
+    last_d = last.date() if hasattr(last, "date") else last
+    return df.iloc[:-1] if session_progress(last_d, now) is not None else df
+
+
+def fetch_price_history(ticker: str, period: str = "1y", now: datetime | None = None) -> pd.DataFrame:
+    """OHLCV: yerel ambar GÜNCELSE oradan (ağ yok), değilse yfinance'ten canlı; canlı başarısızsa en fazla
+    5 günlük ambar verisi uyarıyla kullanılır. Hata/boş veri durumunda boş DataFrame döner (uydurma yok)."""
+    from config.settings import settings
+
+    wh, cached = None, pd.DataFrame()
+    if settings.use_local_warehouse:
+        try:
+            from tools.data_warehouse import get_warehouse
+
+            wh = get_warehouse()
+            cached = wh.get_ohlcv(ticker, period=period)
+            if _warehouse_is_fresh(ticker, cached, now):
+                return cached
+        except Exception as exc:
+            log.debug("Yerel ambar okunamadı %s: %s", ticker, exc)
+
     import yfinance as yf
 
+    df = pd.DataFrame()
     try:
-        df = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False)
+        raw = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=False)
+        if raw is not None and not raw.empty:
+            df = raw.rename(columns=str.lower)[["open", "high", "low", "close", "volume"]].dropna(subset=["close"])
     except Exception as exc:  # ağ / sembol hatası
         log.warning("Fiyat verisi alınamadı %s: %s", ticker, exc)
+
+    if df.empty:
+        if not cached.empty:
+            log.warning("%s canlı veri yok; yerel ambardaki son veri kullanılıyor (son mum %s)",
+                        ticker, cached.index[-1].date())
+            return cached
         return pd.DataFrame()
-    if df is None or df.empty:
-        return pd.DataFrame()
-    df = df.rename(columns=str.lower)[["open", "high", "low", "close", "volume"]].dropna(subset=["close"])
+
+    if wh is not None:
+        try:
+            wh.upsert_ohlcv(ticker, _without_open_bar(df, now))
+        except Exception as exc:
+            log.debug("Yerel ambara yazılamadı %s: %s", ticker, exc)
     return df
 
 

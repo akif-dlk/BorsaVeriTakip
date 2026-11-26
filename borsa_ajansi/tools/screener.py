@@ -81,12 +81,86 @@ def score_indicators(ind: dict[str, Any], bist_change_20d: float | None) -> tupl
     return round(s, 2), why
 
 
+def score_reversal_catalyst(
+    ind: dict[str, Any],
+    kap_items: list[dict[str, Any]] | None = None,
+) -> tuple[float, list[str]]:
+    """2. Kanal: Aşırı satım destek dönüşü (mean-reversion) + yakın dönem KAP katalizörü puanlaması."""
+    if ind.get("status") != "ok":
+        return -1.0, ["veri_yok"]
+    s, why = 0.0, []
+    c = ind.get("close")
+    rsi = ind.get("rsi14")
+    stoch = ind.get("stoch_k")
+    ch1 = ind.get("change_1d_pct")
+    vol_r = ind.get("volume_ratio")
+    lv = ind.get("levels") or {}
+    s60 = lv.get("support_60d")
+    bb_low = ind.get("bb_lower")
+
+    oversold = (_num(rsi) and rsi <= 36) or (_num(stoch) and stoch <= 22)
+    near_bb_low = _num(bb_low) and _num(c) and c <= bb_low * 1.03
+    if oversold:
+        s += 25
+        why.append(f"aşırı satım dönüş bölgesi (RSI={rsi})")
+    elif _num(rsi) and rsi <= 42 and near_bb_low:
+        s += 15
+        why.append("Bollinger alt bant desteği")
+
+    if _num(ch1) and ch1 > 0.3:
+        s += 15
+        why.append(f"tepki mumu ({ch1:+.1f}%)")
+    if _num(s60) and _num(c) and s60 > 0 and 0 <= (c - s60) / s60 <= 0.06:
+        s += 15
+        why.append("60g ana destek üzerinde")
+    if _num(vol_r) and vol_r >= 1.1:
+        s += 10
+        why.append(f"dönüş hacmi {vol_r}x")
+
+    if kap_items:
+        from agents.document_reader import _HIGH_MAT_KAP, _NEG_KAP, _POS_KAP
+
+        pos_hits, high_hits, neg_hits = 0, 0, 0
+        for item in kap_items[:3]:
+            blob = f"{item.get('title', '')} {item.get('summary', '')} {item.get('body_text', '')}"
+            pos_hits += len(_POS_KAP.findall(blob))
+            neg_hits += len(_NEG_KAP.findall(blob))
+            if _HIGH_MAT_KAP.search(blob):
+                high_hits += 1
+        if pos_hits > neg_hits:
+            boost = 25 if high_hits else 15
+            s += boost
+            why.append("olumlu KAP katalizörü")
+        elif neg_hits > pos_hits:
+            s -= 20
+
+    # Dönüş/katalizör adayı sayılabilmesi için anlamlı sinyal eşiği
+    return (round(s, 2), why) if s >= 35 else (-1.0, why)
+
+
 def screen(tickers: list[str] | None = None, top_n: int | None = None,
            fetcher: Callable[[str, str], pd.DataFrame] = fetch_price_history,
-           exclude: set[str] | None = None) -> list[dict[str, Any]]:
+           exclude: set[str] | None = None,
+           include_reversals: bool | None = None,
+           prefilter_rr: bool | None = None,
+           kap_catalysts: dict[str, list[dict[str, Any]]] | None = None) -> list[dict[str, Any]]:
+    from agents.risk_manager import compute_trade_plan
+
     tickers = tickers or universe()
     exclude = exclude or set()
     top_n = top_n or settings.sim_candidates
+    inc_rev = settings.screen_include_reversals if include_reversals is None else include_reversals
+    chk_rr = settings.screen_prefilter_rr if prefilter_rr is None else prefilter_rr
+
+    if inc_rev and kap_catalysts is None and settings.use_local_warehouse:
+        try:
+            from tools.data_warehouse import get_warehouse
+
+            kap_catalysts = get_warehouse().recent_kap_catalysts(days=7)
+        except Exception:
+            kap_catalysts = {}
+    kap_catalysts = kap_catalysts or {}
+
     bist = compute_indicators(fetcher("XU100.IS", "1y"))
     b20 = bist.get("change_20d_pct") if _num(bist.get("change_20d_pct")) else None
 
@@ -96,12 +170,55 @@ def screen(tickers: list[str] | None = None, top_n: int | None = None,
         ind = compute_indicators(fetcher(t, "1y"))
         c, av = ind.get("close"), ind.get("avg_volume_20d")
         if min_to > 0 and _num(c) and _num(av) and c * av < min_to:
-            return {"ticker": t, "score": -1.0, "reasons": ["sığ (düşük işlem hacmi)"], "close": c, "rsi14": None}
+            return {"ticker": t, "score": -1.0, "rev_score": -1.0, "reasons": ["sığ (düşük işlem hacmi)"],
+                    "rev_reasons": [], "close": c, "rsi14": None, "rr": None, "channel": "elenen"}
+        plan = compute_trade_plan("AL", ind)
+        rr = plan.risk_reward if plan else None
+        if chk_rr and (rr is None or rr < settings.min_risk_reward):
+            return {"ticker": t, "score": -1.0, "rev_score": -1.0, "reasons": [f"R/Ö yetersiz ({rr})"],
+                    "rev_reasons": [], "close": c, "rsi14": ind.get("rsi14"), "rr": rr, "channel": "elenen"}
         sc, why = score_indicators(ind, b20)
-        return {"ticker": t, "score": sc, "reasons": why, "close": ind.get("close"), "rsi14": ind.get("rsi14")}
+        rev_sc, rev_why = score_reversal_catalyst(ind, kap_catalysts.get(t)) if inc_rev else (-1.0, [])
+        return {
+            "ticker": t,
+            "score": sc,
+            "rev_score": rev_sc,
+            "reasons": why,
+            "rev_reasons": rev_why,
+            "close": ind.get("close"),
+            "rsi14": ind.get("rsi14"),
+            "rr": rr,
+            "channel": "trend_momentum",
+        }
 
     with ThreadPoolExecutor(max_workers=10) as pool:
-        rows = list(pool.map(_one, [t for t in tickers if t not in exclude]))
-    rows = [r for r in rows if r["score"] >= 0]
-    rows.sort(key=lambda r: r["score"], reverse=True)
-    return rows[:top_n]
+        all_rows = list(pool.map(_one, [t for t in tickers if t not in exclude]))
+
+    mom_rows = [dict(r) for r in all_rows if r["score"] >= 0]
+    mom_rows.sort(key=lambda r: r["score"], reverse=True)
+
+    if not inc_rev or top_n < 2:
+        return mom_rows[:top_n]
+
+    rev_slots = max(1, top_n // 3)
+    mom_slots = max(1, top_n - rev_slots)
+    chosen = mom_rows[:mom_slots]
+    picked_set = {r["ticker"] for r in chosen}
+
+    rev_rows = [dict(r) for r in all_rows if r["rev_score"] >= 35 and r["ticker"] not in picked_set]
+    rev_rows.sort(key=lambda r: r["rev_score"], reverse=True)
+    for r in rev_rows[:rev_slots]:
+        r["score"] = r["rev_score"]
+        r["reasons"] = r["rev_reasons"]
+        r["channel"] = "donus_katalizor"
+        chosen.append(r)
+        picked_set.add(r["ticker"])
+
+    # Dönüş kanalı boşsa kalan kontenjanı momentum adaylarıyla tamamla
+    for r in mom_rows[mom_slots:]:
+        if len(chosen) >= top_n:
+            break
+        if r["ticker"] not in picked_set:
+            chosen.append(r)
+            picked_set.add(r["ticker"])
+    return chosen[:top_n]

@@ -34,6 +34,14 @@ class AnalystReport(_Strict):
     summary: str
 
 
+class BatchAnalystReports(_Strict):
+    """Ekonomik tek-çağrı modu: 4 analist perspektifini tek bir yapılandırılmış yanıtta üretir."""
+    teknik: AnalystReport
+    temel: AnalystReport
+    gundem: AnalystReport
+    duygu: AnalystReport
+
+
 # ---------- Katman 1: Fact-check sonucu (Python) ----------
 class ClaimCheck(_Strict):
     field: str
@@ -78,6 +86,12 @@ class RiskJudgement(_Strict):
     """LLM'in (hakem) ürettiği nitel karar. Seviyeler ve R/Ö Python'da hesaplanır."""
     decision: Decision
     confidence: float = Field(ge=0.0, le=1.0)
+    conviction_score: float = Field(
+        default=0.0,
+        ge=-1.0,
+        le=1.0,
+        description="-1.0 (güçlü SAT) .. +1.0 (güçlü AL) net asimetrik beklenti skoru; 0 dengede",
+    )
     winning_side: Literal["boga", "ayi", "berabere"]
     technical_fundamental_conflict: bool
     rationale: str
@@ -100,15 +114,16 @@ class FinalDecision(_Strict):
     llm_decision: Decision
     raw_confidence: float
     confidence: float
+    conviction_score: float = 0.0
     winning_side: str
     rationale: str
     key_risks: list[str]
-    gate_reasons: list[str] = []  # BEKLE'ye çekilme / güven düşürme gerekçeleri
+    gate_reasons: list[str] = []  # BEKLE'ye çekilme / güven düşürme / kalibrasyon gerekçeleri
     trade_plan: TradePlan | None = None
     close: float | None = None
 
 
-# ---------- Belge okuma: KAP bildirimleri ve faaliyet raporu / yatırımcı sunumu (LLM, hızlı model) ----------
+# ---------- Belge okuma: KAP bildirimleri ve faaliyet raporu / yatırımcı sunumu ----------
 class DisclosureNote(_Strict):
     disclosure_index: int = Field(description="Bildirimin KAP numarası (verilen listeden aynen)")
     impact: Signal = Field(description="Hisse fiyatına olası etki")
