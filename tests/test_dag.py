@@ -161,3 +161,30 @@ def test_dbt_test_report_callable(dag_module, monkeypatch):
     monkeypatch.setattr(dbt_report, "daily_report", lambda: {"ok": True, "total": 120})
     task = next(t for t in dag_module.dag.tasks if t.task_id == "dbt_test_report")
     assert task.python_callable(ti=object(), ds="2026-11-26") == {"ok": True, "total": 120}
+
+
+def test_check_alerts_runs_last_even_on_failure(dag_module):
+    task = next(t for t in dag_module.dag.tasks if t.task_id == "check_alerts")
+    assert [t.task_id for t in task.upstream] == ["check_gaps", "dbt_test_report"]
+    assert task.kwargs["trigger_rule"] == "all_done"  # bir görev düşse de alarm kontrolü çalışır
+
+
+def test_check_alerts_callable_uses_data_interval_end(dag_module, monkeypatch):
+    from bvt import alerts
+
+    seen = {}
+    monkeypatch.setattr(alerts, "check_and_alert", lambda run_end: seen.setdefault("end", run_end) and {"ok": 1})
+    task = next(t for t in dag_module.dag.tasks if t.task_id == "check_alerts")
+    end = datetime(2026, 11, 27, 16, 30, tzinfo=timezone.utc)
+    assert task.python_callable(data_interval_end=end, ti=object()) == {"ok": 1}
+    assert seen["end"] == end
+
+
+def test_every_task_alerts_on_final_failure(dag_module, monkeypatch):
+    from bvt import alerts
+
+    callback = dag_module.dag.kwargs["default_args"]["on_failure_callback"]
+    seen = []
+    monkeypatch.setattr(alerts, "task_failure_callback", seen.append)
+    callback({"run_id": "r1"})
+    assert seen == [{"run_id": "r1"}]

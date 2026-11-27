@@ -15,7 +15,7 @@
 - [x] Gün 10: SMA, EMA, RSI, volatilite → `mart_indicators`
 - [x] Gün 11: Getiriler, haftalık/aylık özet → `mart_correlations`
 - [x] Gün 12: dbt testleri, anormal fiyat tespiti → `mart_price_anomalies`, test raporu
-- [ ] Gün 13: Telegram/e-posta alarmı
+- [x] Gün 13: Telegram/e-posta alarmı → `bvt.alerts`, `check_alerts` görevi, `ops.alerts`
 - [ ] Gün 14: Refactor, birim testleri
 
 ## Hafta 3: Streaming, API, UI

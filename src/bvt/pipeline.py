@@ -101,7 +101,7 @@ def check_gaps(run_end: datetime | date, days: int | None = None) -> dict:
     """Son `BVT_GAP_CHECK_DAYS` (varsayılan 30) günün boşluk raporunu ops.data_gaps'e yazar, özeti döner.
 
     Görevi düşürmez: gerçek eksikler WARNING olarak loglanır; onarım `python -m bvt.backfill --repair-gaps`
-    ile, alarm Gün 13'te eklenir.
+    ile yapılır; son günlerin eksikleri `check_alerts` görevinde (`bvt.alerts`) bildirilir.
     """
     from bvt import gaps
 

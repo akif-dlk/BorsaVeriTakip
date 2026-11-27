@@ -197,6 +197,31 @@ where price_date >= current_date - 30
 order by severity, price_date desc;
 ```
 
+### Alarm: Telegram / e-posta
+
+Bir DAG görevi son denemesinde de başarısız olursa ya da veri sağlık kontrolü sorun bulursa bildirim gönderilir
+(`src/bvt/alerts.py`). Günlük DAG'in son görevi `check_alerts` (önceki görevler düşse de çalışır) şunlara bakar:
+
+| Sorun | Koşul | Önem |
+|---|---|---|
+| `stale_data` | enstrümanın son verisi `BVT_STALE_AFTER_DAYS` (2) iş gününden eski ya da hiç yok | error |
+| `dbt_test` | son 6 saatte `fail` / `error` veren dbt testi | error |
+| `missing_days` | son 7 günde gerçek eksik gün (`ops.data_gaps`) | warn |
+| `price_anomaly` | son 3 günde error düzeyli fiyat anormalliği | warn |
+
+Kanallar `.env`'den kurulur (boş kanal devre dışı; hiçbiri yoksa alarm yalnızca loglanır):
+Telegram için `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` (@BotFather'dan bot açın, bota bir mesaj atın, sohbet
+kimliğini `https://api.telegram.org/bot<TOKEN>/getUpdates` yanıtından alın); e-posta için `SMTP_HOST`,
+`SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO`. Gönderilen alarmlar
+`ops.alerts`'a yazılır; aynı sorun kümesi `BVT_ALERT_COOLDOWN_HOURS` (12) saat içinde tekrarlanmaz.
+Mevcut bir veritabanına tabloyu eklemek için `PYTHONPATH=src python -m bvt.db --init`.
+
+```bash
+PYTHONPATH=src python -m bvt.alerts --test       # kanallara deneme mesajı
+PYTHONPATH=src python -m bvt.alerts --dry-run    # sağlık kontrolü, mesajı yalnızca yazdır
+PYTHONPATH=src python -m bvt.alerts --force      # kontrol et, bekleme süresini yok sayarak bildir
+```
+
 dbt, Airflow ile bağımlılık çakışması olmasın diye **ayrı bir sanal ortama** kurulur (imajda `/opt/dbt-venv`).
 `bvt.dbt_runner` dbt'yi `.env` yüklenmiş olarak ve proje/profil dizinini vererek çağırır. Günlük DAG'de
 `dbt_build_staging` görevi üç çekimden sonra çalışır (`dbt build --select source:raw staging`), başarılı
@@ -225,7 +250,7 @@ docker compose exec airflow-scheduler python -m bvt.dbt_runner build            
 ├── airflow/             # Dockerfile (Airflow + proje bağımlılıkları + ayrı dbt ortamı), dags/
 ├── dbt/                 # dbt projesi: models/staging (stg_*), models/marts (dim_*, fact_*, mart_*), seeds, makrolar, generic + singular testler
 ├── sql/init/            # ilk açılışta çalışan şema betikleri
-├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry, dbt_runner, dbt_report, indicators, returns, anomalies
+├── src/bvt/             # Python paketi: config, db, raw_loader, çekiciler, pipeline, backfill, gaps, retry, dbt_runner, dbt_report, indicators, returns, anomalies, alerts
 ├── docs/                # mimari, kaynaklar, yol haritası
 └── tests/
 ```

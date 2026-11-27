@@ -31,6 +31,18 @@ x-airflow-common: &airflow-common
     BVT_LOOKBACK_DAYS: ${BVT_LOOKBACK_DAYS:-7}
     BVT_GAP_CHECK_DAYS: ${BVT_GAP_CHECK_DAYS:-30}
     BVT_LOG_LEVEL: ${BVT_LOG_LEVEL:-INFO}
+    # Alarm kanalları (boşsa kanal devre dışı; bkz. .env.example)
+    TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    SMTP_HOST: ${SMTP_HOST:-}
+    SMTP_PORT: ${SMTP_PORT:-587}
+    SMTP_USER: ${SMTP_USER:-}
+    SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+    ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-}
+    ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+    BVT_STALE_AFTER_DAYS: ${BVT_STALE_AFTER_DAYS:-2}
+    BVT_ALERT_COOLDOWN_HOURS: ${BVT_ALERT_COOLDOWN_HOURS:-12}
     # dbt: proje salt-okunur bağlanır; derleme çıktısı ve loglar konteyner içinde geçici dizine yazılır
     BVT_DBT_DIR: /opt/bvt/dbt
     DBT_TARGET_PATH: /tmp/dbt/target

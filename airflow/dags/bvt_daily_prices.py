@@ -15,6 +15,10 @@ Döviz (USD/TRY, EUR/TRY), BIST (8 hisse + XU100) ve altını (ons + gram) her i
   `mart_price_anomalies`) kurar. Her dbt görevi test sonuçlarını `ops.dbt_test_results`'a yazar.
   Son olarak `dbt_test_report` (dbt görevleri başarısız olsa da çalışır) son 6 saatin test sonuçlarını ve 30
   günlük fiyat anormalliklerini `test_report.md` / `test_report.json` olarak yazar; özet XCom'a döner.
+- **Alarm:** `check_alerts` (boşluk kontrolü ve test raporundan sonra, önceki görevler düşse de) bayat veriyi,
+  başarısız dbt testlerini, eksik günleri ve yeni fiyat anormalliklerini toplar; sorun varsa Telegram ve/veya
+  e-posta ile bildirir (`bvt.alerts`). Ayrıca her görevin `on_failure_callback`'i, görev son denemede de
+  düştüğünde ayrı bir görev hatası bildirimi gönderir. Aynı alarm 12 saat içinde tekrarlanmaz (`ops.alerts`).
 - **Retry:** iki katman. Çekici içinde HTTP isteği üstel bekleme ile 4 kez denenir (hız sınırında en az 30 sn);
   o da tükenirse Airflow görevi 5, 10 dk... (üst sınır 30 dk) arayla 2 kez daha dener.
 - İş mantığı `bvt.pipeline` / `bvt.fetch_*` modüllerindedir; bu dosya yalnızca orkestrasyonu tanımlar.
@@ -69,6 +73,20 @@ def dbt_test_report(**_context) -> dict:
     return daily_report()
 
 
+def check_alerts(data_interval_end=None, **_context) -> dict:
+    """Veri sağlık kontrolü (bayat veri, dbt testleri, eksik gün, anormallik); sorun varsa bildirir."""
+    from bvt.alerts import check_and_alert
+
+    return check_and_alert(data_interval_end)
+
+
+def task_failure_alert(context) -> None:
+    """Görev son denemede de başarısız olduğunda Telegram/e-posta bildirimi (asla hata fırlatmaz)."""
+    from bvt.alerts import task_failure_callback
+
+    task_failure_callback(context)
+
+
 default_args = {
     "owner": "bvt",
     "retries": 2,
@@ -76,6 +94,7 @@ default_args = {
     "retry_exponential_backoff": True,
     "max_retry_delay": timedelta(minutes=30),
     "execution_timeout": timedelta(minutes=30),
+    "on_failure_callback": task_failure_alert,  # yalnızca son deneme düştüğünde (yeniden denemelerde değil)
 }
 
 with DAG(
@@ -86,7 +105,7 @@ with DAG(
     catchup=False,  # geçmiş yükleme CLI ile parça parça yapılır (bkz. README)
     max_active_runs=1,
     default_args=default_args,
-    tags=["bvt", "raw", "dbt", "daily"],
+    tags=["bvt", "raw", "dbt", "alerts", "daily"],
     doc_md=__doc__,
 ) as dag:
     fetch_tasks = [
@@ -123,5 +142,13 @@ with DAG(
         trigger_rule=TriggerRule.ALL_DONE,
         retries=1,
     )
+    alerts = PythonOperator(
+        task_id="check_alerts",
+        python_callable=check_alerts,
+        # Alarm en çok bir şey düştüğünde gereklidir: önceki görevler başarısız olsa da çalışır.
+        trigger_rule=TriggerRule.ALL_DONE,
+        retries=1,
+    )
     fetch_tasks >> gap_check
     fetch_tasks >> staging >> marts >> report
+    [gap_check, report] >> alerts

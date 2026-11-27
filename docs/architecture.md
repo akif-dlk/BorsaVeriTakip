@@ -128,6 +128,17 @@ flowchart LR
   üretir, özetini XCom'a döner.
 - **Boşluk kontrolü:** `check_gaps` görevi üç çekimden sonra (`trigger_rule=all_done`, biri düşse de) çalışır,
   son `BVT_GAP_CHECK_DAYS` günü `bvt.gaps` ile sınıflandırıp `ops.data_gaps`'e yazar; görevi düşürmez.
+- **Alarm (`bvt.alerts`):** iki yol. (1) `default_args.on_failure_callback`: görev son denemesinde de düşerse
+  (yeniden denemelerde değil) DAG/görev/çalışma/deneme/hata/log bağlantısıyla bildirim; geri çağırma asla hata
+  fırlatmaz. (2) `check_alerts` görevi (`check_gaps` ve `dbt_test_report`'tan sonra, `all_done`) veritabanından
+  sağlık sorunlarını toplar: bayat veri (enstrümanın son günü referans günden `BVT_STALE_AFTER_DAYS`=2 iş
+  gününden eski ya da hiç verisi yok; error), son 6 saatte `fail`/`error` veren dbt testleri (error), son 7
+  gündeki gerçek eksik günler (`ops.data_gaps`, warn) ve son 3 gündeki error düzeyli fiyat anormallikleri
+  (warn). Sorun varsa tek bir özet mesaj gider. Kanallar: Telegram Bot API (`sendMessage`, HTML, 429/5xx'te
+  üstel bekleme, 4xx'te denenmez) ve SMTP (587 STARTTLS / 465 SSL); boş kanal devre dışıdır, hiçbiri yoksa
+  alarm loglanır. Her gönderim `ops.alerts`'a yazılır; aynı sorun kümesi (`dedup_key`, ayrıntıdan bağımsız)
+  `BVT_ALERT_COOLDOWN_HOURS`=12 saat içinde tekrarlanmaz. Veritabanı erişilemezse tekrar önleme atlanır,
+  alarm yine gider. Token/şifre loglara ve hata mesajlarına yazılmaz. Bildirim gönderilemese de görev düşmez.
 - **Retry:** istek düzeyinde `bvt.retry` (üstel bekleme, yalnızca geçici hatalar, hız sınırında ≥30 sn), görev
   düzeyinde Airflow (`retries=2`, `retry_exponential_backoff`, `max_retry_delay=30 dk`).
 - DAG dosyası projeden üst düzeyde yalnızca `bvt.pipeline`ı içe aktarır (o da yalnızca standart kütüphane kullanır; scheduler ayrıştırması hızlı kalır);

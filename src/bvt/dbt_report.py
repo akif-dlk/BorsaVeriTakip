@@ -9,7 +9,7 @@
 2. **Rapor** (`daily_report`): son saatlerdeki çağrılarda her testin en güncel sonucu ve son 30 günün fiyat
    anormallikleri (`marts.mart_price_anomalies`) Markdown (`test_report.md`) ve JSON (`test_report.json`) olarak
    yazılır. Varsayılan dizin dbt hedef dizinidir (`DBT_TARGET_PATH`, yoksa `dbt/target`); `BVT_REPORT_DIR` ile
-   değiştirilebilir. Özet sözlüğü Airflow XCom'una döner; alarm (Gün 13) bunu kullanır.
+   değiştirilebilir. Özet sözlüğü Airflow XCom'una döner; alarm (`bvt.alerts`) başarısız testleri `ops.dbt_test_results`'tan okur.
 
 Kullanım:
     python -m bvt.dbt_report                       # veritabanından günlük rapor (son 6 saat + 30 günlük anormallik)
